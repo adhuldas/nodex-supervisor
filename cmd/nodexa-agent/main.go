@@ -541,15 +541,23 @@ func registerWithBackend(ctx context.Context, client *backend.Client, id *identi
 // registerRequest describes this device to nodexa-backend's register route.
 func registerRequest(id *identity.Identity, fleetID *string) backend.RegisterRequest {
 	info := system.Collect()
+	provider := id.Provider
+	if provider == "linux" || provider == "" {
+		provider = "third_party"
+	}
+	deviceType := "third_party"
+	isThirdParty := true
 	return backend.RegisterRequest{
 		DeviceID:            id.DeviceID,
 		HardwareFingerprint: id.Fingerprint,
-		IdentityProvider:    id.Provider,
+		IdentityProvider:    provider,
 		OSVersion:           update.RunningOSVersion(),
 		AgentVersion:        version.AgentVersion,
 		Architecture:        info.Architecture,
 		Hostname:            info.Hostname,
 		FleetID:             fleetID,
+		DeviceType:          &deviceType,
+		IsThirdParty:        &isThirdParty,
 	}
 }
 
@@ -631,6 +639,7 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		osUpdateStatus = osUpdater.HeartbeatStatus()
 	}
 
+	deviceType := "third_party"
 	resp, err := client.Heartbeat(ctx, deviceID, token, backend.HeartbeatRequest{
 		OSVersion:         osVersion,
 		AgentVersion:      version.AgentVersion,
@@ -654,6 +663,7 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		CloudURL:          client.BaseURL(),
 		Location:          location,
 		Apps:              apps,
+		DeviceType:        &deviceType,
 	})
 	if err != nil {
 		log.Printf("warning: backend heartbeat: %v", err)

@@ -52,6 +52,48 @@ func TestRegisterSuccess(t *testing.T) {
 	}
 }
 
+func TestRegisterThirdPartyDevicePayload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.DeviceType == nil || *req.DeviceType != "third_party" {
+			t.Fatalf("expected device_type 'third_party', got %+v", req.DeviceType)
+		}
+		if req.IsThirdParty == nil || !*req.IsThirdParty {
+			t.Fatalf("expected is_third_party true, got %+v", req.IsThirdParty)
+		}
+		if req.IdentityProvider != "third_party" {
+			t.Fatalf("expected identity_provider 'third_party', got %s", req.IdentityProvider)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(RegisterResponse{
+			DeviceID:     req.DeviceID,
+			Token:        "test-token",
+			RegisteredAt: "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	deviceType := "third_party"
+	isThirdParty := true
+	client := NewClient(srv.URL)
+	_, err := client.Register(context.Background(), RegisterRequest{
+		DeviceID:            "ndx_dev_third_party",
+		HardwareFingerprint: "fp",
+		IdentityProvider:    "third_party",
+		OSVersion:           "1.0.0",
+		AgentVersion:        "0.3.7",
+		Architecture:        "arm64",
+		DeviceType:          &deviceType,
+		IsThirdParty:        &isThirdParty,
+	})
+	if err != nil {
+		t.Fatalf("Register third-party device: %v", err)
+	}
+}
+
 func TestHeartbeatSendsBearerToken(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +135,7 @@ func TestHeartbeatSendsMetrics(t *testing.T) {
 	defer srv.Close()
 
 	temp := 47.5
+	deviceType := "third_party"
 	client := NewClient(srv.URL)
 	_, err := client.Heartbeat(context.Background(), "ndx_dev_test", "secret-token", HeartbeatRequest{
 		AgentVersion:    "0.2.0",
@@ -100,6 +143,7 @@ func TestHeartbeatSendsMetrics(t *testing.T) {
 		MemUsedPercent:  60,
 		DiskUsedPercent: 71,
 		TemperatureC:    &temp,
+		DeviceType:      &deviceType,
 	})
 	if err != nil {
 		t.Fatalf("Heartbeat: %v", err)
@@ -109,6 +153,9 @@ func TestHeartbeatSendsMetrics(t *testing.T) {
 	}
 	if got.TemperatureC == nil || *got.TemperatureC != 47.5 {
 		t.Fatalf("unexpected temperature: %+v", got.TemperatureC)
+	}
+	if got.DeviceType == nil || *got.DeviceType != "third_party" {
+		t.Fatalf("unexpected device_type: %+v", got.DeviceType)
 	}
 }
 

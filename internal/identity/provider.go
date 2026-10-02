@@ -49,6 +49,13 @@ type Provider interface {
 	Collect() (HardwareInfo, error)
 }
 
+// ThirdPartyProvider derives identity for third-party systems running nodex-supervisor.
+type ThirdPartyProvider struct {
+	LinuxProvider
+}
+
+func (p *ThirdPartyProvider) Name() string { return "third_party" }
+
 // Detect picks the most specific Provider available on the running system.
 // Detection order: Variscite hardware > generic Linux > QEMU virtual
 // hardware is intentionally NOT the priority order used; QEMU is checked
@@ -61,7 +68,7 @@ func Detect() Provider {
 	if isVariscite() {
 		return &VarisciteProvider{}
 	}
-	return &LinuxProvider{}
+	return &ThirdPartyProvider{}
 }
 
 // ForName returns a specific named provider, bypassing auto-detection. Used
@@ -72,6 +79,8 @@ func ForName(name string) Provider {
 		return &QEMUProvider{}
 	case "variscite":
 		return &VarisciteProvider{}
+	case "third_party":
+		return &ThirdPartyProvider{}
 	case "linux":
 		return &LinuxProvider{}
 	default:

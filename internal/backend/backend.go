@@ -106,6 +106,8 @@ type RegisterRequest struct {
 	Architecture        string  `json:"architecture"`
 	Hostname            string  `json:"hostname,omitempty"`
 	FleetID             *string `json:"fleet_id,omitempty"`
+	DeviceType          *string `json:"device_type,omitempty"`
+	IsThirdParty        *bool   `json:"is_third_party,omitempty"`
 }
 
 // RegisterResponse mirrors nodexa-backend's DeviceRegisterResponse.
@@ -180,6 +182,9 @@ type HeartbeatRequest struct {
 	// Apps is each application's resource usage; nil when none could be
 	// read (the backend keeps the last report).
 	Apps []AppUsage `json:"apps,omitempty"`
+
+	// DeviceType identifies the device runtime class ("native" vs "third_party").
+	DeviceType *string `json:"device_type,omitempty"`
 }
 
 // AppUsage is one application's (container's) share of the device's
