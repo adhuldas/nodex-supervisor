@@ -96,11 +96,23 @@ build_target() {
   local agent_bin_name="nodexa-agent-${AGENT_VERSION}-${target_goos}-${display_arch}"
   local agent_bin_path="${BIN_DIR}/${agent_bin_name}"
 
+  local enc_cloud_url=""
+  local enc_ts_key=""
+  if [[ -n "${CLOUD_URL:-}" ]]; then
+    enc_cloud_url="$(python3 -c "import sys, base64; raw = bytearray(sys.argv[1].encode('utf-8')); sys.stdout.write('enc:' + base64.b64encode(bytes([b ^ 0x5a for b in raw])).decode('utf-8'))" "${CLOUD_URL}")"
+  fi
+  local ts_raw="${TAILSCALE_AUTHKEY:-${NODEXA_TAILSCALE_AUTHKEY:-}}"
+  if [[ -n "${ts_raw}" ]]; then
+    enc_ts_key="$(python3 -c "import sys, base64; raw = bytearray(sys.argv[1].encode('utf-8')); sys.stdout.write('enc:' + base64.b64encode(bytes([b ^ 0x5a for b in raw])).decode('utf-8'))" "${ts_raw}")"
+  fi
+
   local ldflags="-s -w \
     -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=${OS_VERSION} \
     -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.AgentVersion=${AGENT_VERSION} \
     -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.Commit=${GIT_COMMIT} \
-    -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${BUILD_DATE}"
+    -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${BUILD_DATE} \
+    -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.DefaultCloudURL=${enc_cloud_url} \
+    -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.DefaultTailscaleAuthKey=${enc_ts_key}"
 
   local agent_src_dir="${REPO_ROOT}"
   if [[ -d "${REPO_ROOT}/src/nodexa-agent" ]]; then

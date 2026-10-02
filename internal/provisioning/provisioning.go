@@ -76,26 +76,48 @@ type Data struct {
 // config, so silently ignoring typos would hide a broken provisioning
 // pipeline rather than surface it.
 func Load(mountPath string) (*Data, error) {
-	path := filepath.Join(mountPath, configFileName)
+	primaryPath := filepath.Join(mountPath, configFileName)
+	paths := []string{primaryPath}
 
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &Data{}, nil
+	if mountPath == DefaultMountPath || mountPath == "" {
+		paths = append(paths,
+			"/etc/nodexa/config.json",
+			"/var/lib/nodexa/config.json",
+		)
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			paths = append(paths, filepath.Join(localAppData, "nodex-supervisor", configFileName))
 		}
-		return nil, fmt.Errorf("provisioning: %s: %w", path, err)
-	}
-	defer f.Close()
-
-	var data Data
-	dec := json.NewDecoder(f)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&data); err != nil {
-		return nil, fmt.Errorf("provisioning: %s: invalid config.json: %w", path, err)
-	}
-	if l := data.Location; l != nil && (l.Latitude < -90 || l.Latitude > 90 || l.Longitude < -180 || l.Longitude > 180) {
-		return nil, fmt.Errorf("provisioning: %s: location %v,%v out of range", path, l.Latitude, l.Longitude)
+		if progData := os.Getenv("ProgramData"); progData != "" {
+			paths = append(paths, filepath.Join(progData, "nodexa", configFileName))
+		}
+		if exe, err := os.Executable(); err == nil {
+			paths = append(paths, filepath.Join(filepath.Dir(exe), configFileName))
+		}
+		paths = append(paths, configFileName)
 	}
 
-	return &data, nil
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("provisioning: %s: %w", path, err)
+		}
+		defer f.Close()
+
+		var data Data
+		dec := json.NewDecoder(f)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&data); err != nil {
+			return nil, fmt.Errorf("provisioning: %s: invalid config.json: %w", path, err)
+		}
+		if l := data.Location; l != nil && (l.Latitude < -90 || l.Latitude > 90 || l.Longitude < -180 || l.Longitude > 180) {
+			return nil, fmt.Errorf("provisioning: %s: location %v,%v out of range", path, l.Latitude, l.Longitude)
+		}
+
+		return &data, nil
+	}
+
+	return &Data{}, nil
 }

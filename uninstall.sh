@@ -46,6 +46,22 @@ for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}"; d
     fi
 done
 
+if [ -f "/etc/nodexa/config.json" ]; then
+    if [ -w "/etc/nodexa" ]; then
+        rm -f "/etc/nodexa/config.json"
+    else
+        sudo rm -f "/etc/nodexa/config.json" 2>/dev/null || true
+    fi
+    echo "  Removed /etc/nodexa/config.json"
+    removed=1
+fi
+
+if [ -f "${INSTALL_DIR}/config.json" ]; then
+    rm -f "${INSTALL_DIR}/config.json"
+    echo "  Removed ${INSTALL_DIR}/config.json"
+    removed=1
+fi
+
 if [ ${removed} -eq 1 ]; then
     echo "==> Successfully uninstalled ${BIN_NAME}."
 else

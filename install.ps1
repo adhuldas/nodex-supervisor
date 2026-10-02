@@ -5,7 +5,7 @@
 #   irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1 | iex
 #
 # Or with parameters:
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-InstallDir <path>] [-Version <version>] [-Uninstall]
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-InstallDir <path>] [-Version <version>] [-FleetId <id>] [-Uninstall]
 
 [CmdletBinding()]
 param(
@@ -17,6 +17,9 @@ param(
         }
     ),
     [string]$Version = "",
+    [string]$FleetId = "",
+    [switch]$InstallTailscale,
+    [switch]$SkipTailscale,
     [switch]$Uninstall
 )
 
@@ -59,6 +62,21 @@ function Add-ToUserPath {
     }
 }
 
+function Configure-Fleet {
+    param([string]$TargetFleetId, [string]$TargetDir)
+    if (-not $TargetFleetId) {
+        if ([Environment]::UserInteractive) {
+            $TargetFleetId = Read-Host "Enter Nodexa Fleet ID (leave empty to skip)"
+        }
+    }
+    if ($TargetFleetId) {
+        $configFile = Join-Path $TargetDir "config.json"
+        $configObj = @{ "fleet_id" = $TargetFleetId }
+        $configObj | ConvertTo-Json | Set-Content -Path $configFile -Encoding UTF8
+        Write-Host "==> Configured Fleet ID in $configFile"
+    }
+}
+
 # ----------------- UNINSTALL FLOW -----------------
 if ($Uninstall) {
     Write-Host "==> Uninstalling nodex-supervisor from $InstallDir..."
@@ -71,6 +89,13 @@ if ($Uninstall) {
             Write-Host "  Removed $binPath"
             $removed = $true
         }
+    }
+
+    $configFile = Join-Path $InstallDir "config.json"
+    if (Test-Path $configFile) {
+        Remove-Item -Path $configFile -Force
+        Write-Host "  Removed $configFile"
+        $removed = $true
     }
 
     Remove-FromUserPath $InstallDir
@@ -108,6 +133,126 @@ switch -Regex ($rawArch) {
 
 Write-Host "==> Installing nodex-supervisor for windows-${Arch}..."
 
+function Check-ContainerPrerequisites {
+    Write-Host "==> Checking container deployment prerequisites..." -ForegroundColor Cyan
+    $runtimeFound = $false
+
+    $dockerCmd = Get-Command "docker" -ErrorAction SilentlyContinue
+    if ($dockerCmd) {
+        $dockerVersion = & docker version --format '{{.Server.Version}}' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $dockerVersion) {
+            Write-Host "  [✓] Docker detected and running (server v$dockerVersion)." -ForegroundColor Green
+            Write-Host "      nodex-supervisor will use Docker for container deployment & management."
+            $runtimeFound = $true
+        } else {
+            Write-Host "  [!] Docker CLI found, but Docker daemon / Docker Desktop is not responding." -ForegroundColor Yellow
+            Write-Host "      Please start Docker Desktop to enable container deployments."
+            $runtimeFound = $true
+        }
+    } else {
+        $nerdctlCmd = Get-Command "nerdctl" -ErrorAction SilentlyContinue
+        if ($nerdctlCmd) {
+            Write-Host "  [✓] nerdctl detected." -ForegroundColor Green
+            Write-Host "      nodex-supervisor will use nerdctl for container deployment & management."
+            $runtimeFound = $true
+        }
+    }
+
+    if (-not $runtimeFound) {
+        Write-Host "  [!] Notice: No container runtime detected (Docker Desktop is recommended for Windows)." -ForegroundColor Yellow
+        Write-Host "      To deploy containers, install Docker Desktop:"
+        Write-Host "      -> https://www.docker.com/products/docker-desktop/"
+    }
+}
+
+function Check-TailscalePrerequisite {
+    Write-Host "==> Checking Tailscale networking prerequisite..." -ForegroundColor Cyan
+    $tsCmd = Get-Command "tailscale" -ErrorAction SilentlyContinue
+    if ($tsCmd) {
+        $tsVer = & tailscale version 2>$null | Select-Object -First 1
+        Write-Host "  [✓] Tailscale is installed ($tsVer)." -ForegroundColor Green
+        return
+    }
+
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Yellow
+    Write-Host "  [!] Tailscale is not installed on this system." -ForegroundColor Yellow
+    Write-Host "========================================================================" -ForegroundColor Yellow
+    Write-Host "  Tailscale provides secure, zero-trust peer-to-peer networking required"
+    Write-Host "  by Nodexa for the following features:"
+    Write-Host "    • Remote Web Terminal access from the Nodexa Cloud Console"
+    Write-Host "    • Live remote container log streaming & live telemetry"
+    Write-Host "    • Remote container command execution & debugging (nodexactl exec / SSH)"
+    Write-Host "    • Secure encrypted device-to-cloud tunnel (tailnet mesh)"
+    Write-Host "========================================================================" -ForegroundColor Yellow
+    Write-Host ""
+
+    $doInstall = $false
+    if ($InstallTailscale) {
+        $doInstall = $true
+    } elseif ($SkipTailscale) {
+        $doInstall = $false
+    } else {
+        if ([Environment]::UserInteractive) {
+            $answer = Read-Host "Would you like to install Tailscale now? [y/N]"
+            if ($answer -match '^(y|yes)$') {
+                $doInstall = $true
+            }
+        }
+    }
+
+    if ($doInstall) {
+        Write-Host "==> Installing Tailscale..." -ForegroundColor Cyan
+        $installed = $false
+
+        $wingetCmd = Get-Command "winget" -ErrorAction SilentlyContinue
+        if ($wingetCmd) {
+            & winget install --id Tailscale.Tailscale -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -eq 0) {
+                $installed = $true
+            }
+        }
+
+        if (-not $installed) {
+            $installerUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+            $tempInstaller = Join-Path $env:TEMP "tailscale-setup.exe"
+            Write-Host "  Downloading Tailscale installer from $installerUrl..."
+            try {
+                Invoke-WebRequest -Uri $installerUrl -OutFile $tempInstaller -UseBasicParsing
+                Start-Process -FilePath $tempInstaller -ArgumentList "/quiet" -Wait
+                $installed = $true
+            } catch {
+                Write-Host "  [!] Failed to download Tailscale installer: $_" -ForegroundColor Red
+            }
+        }
+
+        $newTsCmd = Get-Command "tailscale" -ErrorAction SilentlyContinue
+        if ($newTsCmd -or $installed) {
+            Write-Host "  [✓] Tailscale successfully installed." -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Please complete Tailscale setup from: https://tailscale.com/download/windows" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host ""
+        Write-Host "************************************************************************" -ForegroundColor Yellow
+        Write-Host "  [NOTICE] Tailscale installation declined / skipped." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  The following features will NOT be enabled on this device:" -ForegroundColor Yellow
+        Write-Host "    ✗ Remote Web Terminal access from Nodexa Cloud"
+        Write-Host "    ✗ Live remote container log streaming and live log tailing"
+        Write-Host "    ✗ Remote container debugging and execution (nodexactl exec / SSH)"
+        Write-Host "    ✗ Zero-trust direct device tunnel / VPN mesh"
+        Write-Host ""
+        Write-Host "  Local container management and deployments will continue to work."
+        Write-Host "  You can install Tailscale anytime later: https://tailscale.com/download"
+        Write-Host "************************************************************************" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+Check-ContainerPrerequisites
+Check-TailscalePrerequisite
+
 # 1. If Go is installed and repository is cloned locally, build directly
 if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host "  Building from local source..."
@@ -138,6 +283,7 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
         Copy-Item -Path $target -Destination $aliasTarget -Force
 
         Add-ToUserPath $InstallDir
+        Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
 
         Write-Host "==> Successfully installed $BinName to $target"
         Write-Host "==> Alias $AliasName copied to $aliasTarget"
@@ -177,6 +323,7 @@ if (-not $release -or -not $release.tag_name) {
             $aliasTarget = Join-Path $InstallDir $AliasName
             Copy-Item -Path $gopathBin -Destination $aliasTarget -Force
             Add-ToUserPath $InstallDir
+            Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
 
             Write-Host "==> Successfully installed $BinName to $target"
             & $target version
@@ -250,6 +397,7 @@ try {
     Copy-Item -Path $target -Destination $aliasTarget -Force
 
     Add-ToUserPath $InstallDir
+    Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
 
     Write-Host "==> Successfully installed $BinName to $target"
     Write-Host "==> Alias $AliasName copied to $aliasTarget"

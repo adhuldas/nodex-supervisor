@@ -136,8 +136,13 @@ func main() {
 	var backendClient *backend.Client
 	var backendToken tokenHolder
 	registeredCh := make(chan struct{}, 1)
-	// A confirmed cloud URL change overrides the flash-time URL.
-	if cloudURL := resolveCloudURL(stateStore, provisioningData.CloudURL); cloudURL != nil {
+	// A confirmed cloud URL change overrides the flash-time / default URL.
+	cloudURLProv := provisioningData.CloudURL
+	if (cloudURLProv == nil || *cloudURLProv == "") && version.GetDefaultCloudURL() != "" {
+		defaultURL := version.GetDefaultCloudURL()
+		cloudURLProv = &defaultURL
+	}
+	if cloudURL := resolveCloudURL(stateStore, cloudURLProv); cloudURL != nil && *cloudURL != "" {
 		backendClient = backend.NewClient(*cloudURL)
 		// A confirmed fleet transfer overrides the flash-time fleet.
 		fleetID := resolveFleetID(stateStore, provisioningData.FleetID)
@@ -145,12 +150,15 @@ func main() {
 	}
 
 	// --- VPN (ops-only direct SSH access; see internal/vpn) ---
-	// A device with no key provisioned never joins any tailnet -- same
-	// standalone-by-default philosophy as CloudURL above.
 	var vpnIP vpnIPHolder
-	if provisioningData.TailscaleAuthKey != nil {
+	tailscaleAuthKey := provisioningData.TailscaleAuthKey
+	if (tailscaleAuthKey == nil || *tailscaleAuthKey == "") && version.GetDefaultTailscaleAuthKey() != "" {
+		defaultKey := version.GetDefaultTailscaleAuthKey()
+		tailscaleAuthKey = &defaultKey
+	}
+	if tailscaleAuthKey != nil && *tailscaleAuthKey != "" {
 		provider := vpn.TailscaleProvider{
-			AuthKey:  *provisioningData.TailscaleAuthKey,
+			AuthKey:  *tailscaleAuthKey,
 			Hostname: deviceIdentity.DeviceID,
 		}
 		go connectVPN(ctx, provider, bus, &vpnIP)
@@ -158,6 +166,16 @@ func main() {
 
 	// --- container runtime ---
 	containerMgr := container.NewManager(cfg.ContainerDir, containerSeedDir, cfg.DataDir+"/image-cache", cfg.DataDir+"/volumes", runcPath, cfg.RunDir+"/runc", bus)
+	if container.IsDockerAvailable() {
+		containerMgr.SetEngine(container.EngineDocker)
+		log.Println("container runtime: using Docker")
+	} else if container.IsNerdctlAvailable() {
+		containerMgr.SetEngine(container.EngineNerdctl)
+		log.Println("container runtime: using nerdctl")
+	} else {
+		containerMgr.SetEngine(container.EngineRunc)
+		log.Println("container runtime: using runc")
+	}
 	containerMgr.SetDeviceEnv(map[string]string{"DEVICE_ID": deviceIdentity.DeviceID})
 	if err := containerMgr.Bootstrap(); err != nil {
 		log.Printf("warning: container bootstrap: %v", err)

@@ -125,15 +125,32 @@ jobs:
           CGO_ENABLED: '0'
           VERSION: ${{ needs.check-release.outputs.version }}
           COMMIT: ${{ github.sha }}
+          SECRET_CLOUD_URL: ${{ secrets.CLOUD_URL }}
+          SECRET_TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           DISPLAY_ARCH="${{ matrix.display_arch || matrix.arch }}"
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # Helper to obfuscate secrets using XOR mask so they are not plain text in the binary
+          encode_secret() {
+            local val="$1"
+            if [ -z "$val" ]; then
+              echo ""
+              return
+            fi
+            python3 -c "import sys, base64; raw = bytearray(sys.argv[1].encode('utf-8')); sys.stdout.write('enc:' + base64.b64encode(bytes([b ^ 0x5a for b in raw])).decode('utf-8'))" "$val"
+          }
+
+          ENC_CLOUD_URL="$(encode_secret "${SECRET_CLOUD_URL}")"
+          ENC_TS_KEY="$(encode_secret "${SECRET_TAILSCALE_AUTHKEY}")"
 
           LDFLAGS="-s -w \
             -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.AgentVersion=${VERSION} \
             -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=${VERSION} \
             -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.Commit=${COMMIT:0:12} \
-            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${BUILD_DATE}"
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${BUILD_DATE} \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.DefaultCloudURL=${ENC_CLOUD_URL} \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.DefaultTailscaleAuthKey=${ENC_TS_KEY}"
 
           BIN_NAME="nodex-supervisor${{ matrix.ext }}"
           ALIAS_NAME="nodexa-agent${{ matrix.ext }}"

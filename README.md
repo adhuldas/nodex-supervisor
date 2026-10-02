@@ -12,18 +12,28 @@
 
 ### Quick Install (macOS & Linux)
 
-Installs `nodex-supervisor` to `/usr/local/bin` and links the compatibility alias `nodexa-agent`:
+Installs `nodex-supervisor` to `/usr/local/bin`, prompts for your Fleet ID, and links the compatibility alias `nodexa-agent`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh
 ```
 
+You can also pass the Fleet ID non-interactively:
+```bash
+./install.sh --fleet-id <your-fleet-id>
+```
+
 ### Quick Install (Windows)
 
-Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-supervisor\bin` and adds it to your user `PATH`:
+Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-supervisor\bin`, prompts for your Fleet ID, and adds it to your user `PATH`:
 
 ```powershell
 irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1 | iex
+```
+
+Or non-interactively:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -FleetId <your-fleet-id>
 ```
 
 ### With Go

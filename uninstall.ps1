@@ -50,6 +50,13 @@ foreach ($bin in @($BinName, $AliasName)) {
     }
 }
 
+$configFile = Join-Path $InstallDir "config.json"
+if (Test-Path $configFile) {
+    Remove-Item -Path $configFile -Force
+    Write-Host "  Removed $configFile"
+    $removed = $true
+}
+
 Remove-FromUserPath $InstallDir
 
 if (Test-Path $InstallDir) {

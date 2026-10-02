@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -42,6 +43,10 @@ func writeImageMeta(ociLayoutDir, image string) error {
 // Images lists every image cached under imageCacheDir, most recently pulled
 // first.
 func (m *NodexaContainerManager) Images() ([]ImageInfo, error) {
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerImages(context.Background(), m.Engine().cliBinary())
+	}
+
 	entries, err := os.ReadDir(m.imageCacheDir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -76,6 +81,10 @@ func (m *NodexaContainerManager) Images() ([]ImageInfo, error) {
 // already-unpacked container bundle -- those are independent copies under
 // containerDir made at deploy time, not references into imageCacheDir.
 func (m *NodexaContainerManager) RemoveImage(name string) error {
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerRemoveImage(context.Background(), m.Engine().cliBinary(), name)
+	}
+
 	layoutDir := filepath.Join(m.imageCacheDir, sanitizeCacheName(name))
 	metaPath := layoutDir + ".json"
 
@@ -121,6 +130,10 @@ func dirSize(dir string) (int64, error) {
 // PruneUnusedImages removes all cached OCI layouts and metadata in imageCacheDir
 // whose image references are not in the keepImages set.
 func (m *NodexaContainerManager) PruneUnusedImages(keepImages map[string]bool) error {
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerPruneImages(context.Background(), m.Engine().cliBinary(), keepImages)
+	}
+
 	entries, err := os.ReadDir(m.imageCacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {

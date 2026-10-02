@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -42,6 +43,8 @@ type NodexaContainerManager struct {
 	// Supervise's per-container restart backoff (restart.go).
 	restartMu    sync.Mutex
 	restartState map[string]restartState
+
+	engine EngineType
 }
 
 // NewManager creates a container manager.
@@ -69,7 +72,29 @@ func NewManager(containerDir, seedDir, imageCacheDir, volumesDir, runcPath, runc
 		bus:           bus,
 		transient:     make(map[string]NodexaContainer),
 		restartState:  make(map[string]restartState),
+		engine:        EngineRunc,
 	}
+}
+
+// SetEngine sets the active container runtime engine (runc, docker, nerdctl).
+func (m *NodexaContainerManager) SetEngine(engine EngineType) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.engine = engine
+}
+
+func (m *NodexaContainerManager) engineLocked() EngineType {
+	if m.engine == "" {
+		return EngineRunc
+	}
+	return m.engine
+}
+
+// Engine returns the active container runtime engine.
+func (m *NodexaContainerManager) Engine() EngineType {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.engineLocked()
 }
 
 // SetDeviceEnv sets variables every container gets, applied on each start
@@ -149,9 +174,15 @@ func (m *NodexaContainerManager) clearTransient(name string) {
 	}
 }
 
-// Ready reports whether the container runtime (runc) is available. Used as
+// Ready reports whether the container runtime (runc or docker) is available. Used as
 // the health.RuntimeCheckFunc.
 func (m *NodexaContainerManager) Ready() bool {
+	if m.Engine() == EngineDocker {
+		return IsDockerAvailable()
+	}
+	if m.Engine() == EngineNerdctl {
+		return IsNerdctlAvailable()
+	}
 	return m.runner.Available()
 }
 
@@ -319,6 +350,21 @@ func (m *NodexaContainerManager) List() ([]NodexaContainer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	eng := m.engineLocked()
+	if eng == EngineDocker || eng == EngineNerdctl {
+		list, err := dockerList(context.Background(), eng.cliBinary(), m.containerDir)
+		if err != nil {
+			return nil, err
+		}
+		m.transientMu.Lock()
+		for _, tc := range m.transient {
+			list = append(list, tc)
+		}
+		m.transientMu.Unlock()
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		return list, nil
+	}
+
 	entries, err := os.ReadDir(m.containerDir)
 	if os.IsNotExist(err) {
 		entries = nil
@@ -367,6 +413,11 @@ func (m *NodexaContainerManager) Get(name string) (*NodexaContainer, error) {
 		return &tc, nil
 	}
 	m.transientMu.Unlock()
+
+	eng := m.engineLocked()
+	if eng == EngineDocker || eng == EngineNerdctl {
+		return dockerInspect(context.Background(), eng.cliBinary(), name, m.containerDir)
+	}
 
 	bundleDir := filepath.Join(m.containerDir, name)
 	md, err := readMetadata(bundleDir)
@@ -421,6 +472,25 @@ func (m *NodexaContainerManager) Start(name string) error {
 	defer m.clearTransient(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	eng := m.engineLocked()
+	if eng == EngineDocker || eng == EngineNerdctl {
+		cli := eng.cliBinary()
+		if err := dockerStart(context.Background(), cli, name); err != nil {
+			m.bus.Emit(events.ContainerFailed, "container failed to start", events.Fieldsf("container", "%s", name))
+			return err
+		}
+		bundleDir := filepath.Join(m.containerDir, name)
+		if md, _ := readMetadata(bundleDir); md != nil {
+			md.StartedAt = time.Now().UTC()
+			_ = writeMetadata(bundleDir, md)
+		}
+		m.bus.Emit(events.ContainerStarted, "container started", events.Fieldsf("container", "%s", name))
+		if m.onStateChange != nil {
+			m.onStateChange()
+		}
+		return nil
+	}
 	return m.startLocked(name)
 }
 
@@ -502,6 +572,17 @@ func (m *NodexaContainerManager) Stop(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	eng := m.engineLocked()
+	if eng == EngineDocker || eng == EngineNerdctl {
+		cli := eng.cliBinary()
+		_ = dockerStop(context.Background(), cli, name)
+		m.bus.Emit(events.ContainerStopped, "container stopped", events.Fieldsf("container", "%s", name))
+		if m.onStateChange != nil {
+			m.onStateChange()
+		}
+		return nil
+	}
+
 	bundleDir := filepath.Join(m.containerDir, name)
 	md, _ := readMetadata(bundleDir)
 
@@ -537,6 +618,18 @@ func (m *NodexaContainerManager) Remove(name string) error {
 	m.clearTransient(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	eng := m.engineLocked()
+	if eng == EngineDocker || eng == EngineNerdctl {
+		cli := eng.cliBinary()
+		_ = dockerRemove(context.Background(), cli, name)
+		bundleDir := filepath.Join(m.containerDir, name)
+		_ = os.RemoveAll(bundleDir)
+		if m.onStateChange != nil {
+			m.onStateChange()
+		}
+		return nil
+	}
 
 	bundleDir := filepath.Join(m.containerDir, name)
 	md, _ := readMetadata(bundleDir)
@@ -584,6 +677,81 @@ func (m *NodexaContainerManager) Create(spec ServiceSpec, creds *RegistryCredent
 
 	// Stop any existing instance so network ports, sockets, and cgroups are freed.
 	_ = m.Stop(name)
+
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		cli := m.Engine().cliBinary()
+		ctx := context.Background()
+
+		m.setTransient(NodexaContainer{
+			Name:               name,
+			Image:              spec.Image,
+			Command:            spec.Command,
+			State:              StatePullingImage,
+			CreatedAt:          time.Now().UTC(),
+			DeploymentName:     deploymentName,
+			DeploymentRevision: deploymentRevision,
+		})
+		m.bus.Emit(events.DeploymentProgress, "pulling image", map[string]string{
+			"service": name,
+			"image":   spec.Image,
+			"state":   string(StatePullingImage),
+		})
+
+		if err := dockerPull(ctx, cli, spec.Image, creds); err != nil {
+			m.clearTransient(name)
+			return fmt.Errorf("container: deploying %q: %w", name, err)
+		}
+
+		m.setTransient(NodexaContainer{
+			Name:               name,
+			Image:              spec.Image,
+			Command:            spec.Command,
+			State:              StateInstallingImage,
+			CreatedAt:          time.Now().UTC(),
+			DeploymentName:     deploymentName,
+			DeploymentRevision: deploymentRevision,
+		})
+		m.bus.Emit(events.DeploymentProgress, "installing image", map[string]string{
+			"service": name,
+			"image":   spec.Image,
+			"state":   string(StateInstallingImage),
+		})
+
+		_ = os.MkdirAll(bundleDir, 0755)
+
+		if err := dockerCreate(ctx, cli, spec, deploymentName, deploymentRevision, m.deviceEnv); err != nil {
+			m.clearTransient(name)
+			return fmt.Errorf("container: deploying %q: %w", name, err)
+		}
+
+		md := &metadata{
+			Image:              spec.Image,
+			Command:            spec.Command,
+			CreatedAt:          time.Now().UTC(),
+			DeploymentName:     deploymentName,
+			DeploymentRevision: deploymentRevision,
+			Restart:            spec.Restart,
+		}
+		_ = writeMetadata(bundleDir, md)
+
+		m.setTransient(NodexaContainer{
+			Name:               name,
+			Image:              spec.Image,
+			Command:            spec.Command,
+			State:              StateContainerCreated,
+			CreatedAt:          time.Now().UTC(),
+			DeploymentName:     deploymentName,
+			DeploymentRevision: deploymentRevision,
+		})
+		m.bus.Emit(events.DeploymentProgress, "container created", map[string]string{
+			"service": name,
+			"image":   spec.Image,
+			"state":   string(StateContainerCreated),
+		})
+
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}
 
 	// Phase 1: pulling image
 	m.setTransient(NodexaContainer{
@@ -730,6 +898,10 @@ func (m *NodexaContainerManager) Stats(name string) (NodexaContainerStats, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerStats(context.Background(), m.Engine().cliBinary(), name)
+	}
+
 	bundleDir := filepath.Join(m.containerDir, name)
 	spec, err := readBundleSpec(bundleDir)
 	if err != nil {
@@ -777,6 +949,9 @@ func (m *NodexaContainerManager) DiskUsage(name string) (uint64, error) {
 
 // Exec runs a command inside a running container and returns stdout, stderr, and exit code.
 func (m *NodexaContainerManager) Exec(name string, cmd []string, user, cwd string) (string, string, int, error) {
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerExec(context.Background(), m.Engine().cliBinary(), name, cmd, user, cwd)
+	}
 	m.mu.Lock()
 	bundleDir := filepath.Join(m.containerDir, name)
 	if _, err := readMetadata(bundleDir); err != nil {
@@ -793,12 +968,14 @@ func (m *NodexaContainerManager) Exec(name string, cmd []string, user, cwd strin
 	return m.runner.Exec(name, cmd, user, cwd)
 }
 
-// Logs returns the container's captured stdout/stderr (see execRunner.Run's
-// container.log redirection). tail, if positive, limits the result to that
-// many lines from the end; 0 or negative returns the whole file.
+// Logs returns the container's captured stdout/stderr.
 func (m *NodexaContainerManager) Logs(name string, tail int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
+		return dockerLogs(context.Background(), m.Engine().cliBinary(), name, tail)
+	}
 
 	bundleDir := filepath.Join(m.containerDir, name)
 	if _, err := readMetadata(bundleDir); err != nil {

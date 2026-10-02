@@ -50,7 +50,12 @@ func (Unimplemented) IP(ctx context.Context) (string, error) { return "", nil }
 // whether AuthKey is set below -- it just sits idle, unauthenticated,
 // until Connect calls "tailscale up"); this package only ever drives it
 // through the CLI, never touches the daemon directly.
-const tailscaleBinPath = "/usr/bin/tailscale"
+func tailscaleBinPath() string {
+	if p, err := exec.LookPath("tailscale"); err == nil {
+		return p
+	}
+	return "/usr/bin/tailscale"
+}
 
 // TailscaleProvider joins the device onto a tailnet using a pre-provisioned
 // reusable auth key (see internal/provisioning.Data.TailscaleAuthKey) --
@@ -71,7 +76,8 @@ type TailscaleProvider struct {
 // every boot regardless of whether the device is already joined.
 func (p TailscaleProvider) Connect(ctx context.Context) error {
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, tailscaleBinPath, "up",
+	bin := tailscaleBinPath()
+	cmd := exec.CommandContext(ctx, bin, "up",
 		"--authkey="+p.AuthKey,
 		"--hostname="+p.Hostname,
 		"--ssh",
@@ -88,7 +94,7 @@ func (p TailscaleProvider) Connect(ctx context.Context) error {
 	// stays on even across a future "tailscale up" run (manual re-auth,
 	// key rotation, etc.) that forgets to repeat --ssh.
 	stderr.Reset()
-	setCmd := exec.CommandContext(ctx, tailscaleBinPath, "set", "--ssh")
+	setCmd := exec.CommandContext(ctx, bin, "set", "--ssh")
 	setCmd.Stderr = &stderr
 	if err := setCmd.Run(); err != nil {
 		return fmt.Errorf("vpn: tailscale set --ssh: %w: %s", err, stderr.String())
@@ -102,7 +108,7 @@ func (p TailscaleProvider) Connect(ctx context.Context) error {
 // has already succeeded.
 func (p TailscaleProvider) IP(ctx context.Context) (string, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, tailscaleBinPath, "ip", "-4")
+	cmd := exec.CommandContext(ctx, tailscaleBinPath(), "ip", "-4")
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -115,7 +121,7 @@ func (p TailscaleProvider) IP(ctx context.Context) (string, error) {
 // without forgetting its identity (unlike "tailscale logout").
 func (p TailscaleProvider) Disconnect(ctx context.Context) error {
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, tailscaleBinPath, "down")
+	cmd := exec.CommandContext(ctx, tailscaleBinPath(), "down")
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("vpn: tailscale down: %w: %s", err, stderr.String())
@@ -129,6 +135,6 @@ func (p TailscaleProvider) Disconnect(ctx context.Context) error {
 // unreachable) rather than parsing its output, since this package only
 // needs a connected/not-connected verdict, not full peer state.
 func (p TailscaleProvider) Status() Status {
-	err := exec.Command(tailscaleBinPath, "status").Run()
+	err := exec.Command(tailscaleBinPath(), "status").Run()
 	return Status{Connected: err == nil}
 }
