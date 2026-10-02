@@ -1,0 +1,214 @@
+name: Build Nodexa Agent - Nodex Nomad
+
+# x86-64 supervisor for Nodex Nomad (generic x86-64 USB); same AGENT_VERSION
+# as the BeagleBone build, published under the nodex-nomad device type.
+#
+# Runs on every push to main, not just AGENT_VERSION changes: the check job
+# builds whenever no artifact exists yet for the current AGENT_VERSION, and
+# skips otherwise.
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this version was already built"
+        type: boolean
+        default: false
+
+# One run at a time per workflow; a newer push waits rather than cancelling
+# an in-progress build, and its check job then finds the uploaded artifact.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  BOARD: x86_64
+  # build-agent.sh names GOARCH=amd64 output "x86_64".
+  TARGET: linux-x86_64
+
+jobs:
+  # ---------------------------------------------------------
+  # Skip the build when an unexpired artifact for this version
+  # already exists (artifacts are kept for retention-days below).
+  # A manual run with "force" rebuilds anyway.
+  # ---------------------------------------------------------
+  check:
+    name: Check existing Agent build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.existing.outputs.build }}
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Agent version
+        id: version
+        run: |
+          VERSION=$(tr -d '[:space:]' < AGENT_VERSION)
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid AGENT_VERSION: $VERSION"
+            echo "Expected format: X.Y.Z"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Agent version: $VERSION"
+
+      - name: Check for existing build
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          NAME="nodexa-agent-${VERSION}-${TARGET}"
+
+          COUNT=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=${NAME}" \
+            --jq '[.artifacts[] | select(.expired == false)] | length')
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force rebuild requested."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$COUNT" -gt 0 ]; then
+            echo "${NAME} already built -- skipping."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "## ${NAME} already built -- skipped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No existing ${NAME} -- building."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build Nodex Nomad Agent
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ---------------------------------------------------------
+      # 1. Checkout repository
+      # ---------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------
+      # 2. Set up Go
+      # ---------------------------------------------------------
+      # Static CGO_ENABLED=0 cross-compile -- no Yocto/Azure builder needed.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/nodexa-agent/go.mod
+          cache-dependency-path: src/nodexa-agent/go.sum
+
+      # ---------------------------------------------------------
+      # 3. Build Agent
+      # ---------------------------------------------------------
+      # --agent-version is what the device compares against the cloud's
+      # pinned version; a mismatch would re-trigger the OTA every heartbeat.
+      - name: Build Nodexa Agent
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          ./scripts/build-agent.sh \
+            --arch "$BOARD" \
+            --agent-version "$VERSION"
+
+      # ---------------------------------------------------------
+      # 4. Collect and verify OTA tarball
+      # ---------------------------------------------------------
+      - name: Verify OTA tarball
+        id: artifact
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          NAME="nodexa-agent-${VERSION}-${TARGET}"
+
+          # Only the OTA upload file (.tar.gz) goes into the artifact; the
+          # .sha256/.json side files stay in build/artifacts.
+          mkdir -p artifacts
+          cp "build/artifacts/${NAME}.tar.gz" artifacts/
+
+          cd artifacts
+          (cd ../build/artifacts && cat "${NAME}.tar.gz.sha256") | sha256sum -c
+
+          # The device's updater extracts ./nodexa-agent and rejects
+          # anything that is not an x86-64 ELF (internal/update.verifyELF).
+          tar -xzOf "${NAME}.tar.gz" ./nodexa-agent > /tmp/nodexa-agent
+          file /tmp/nodexa-agent | tee /dev/stderr | grep -q 'ELF 64-bit LSB executable, x86-64'
+
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "${NAME}.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------
+      # 5. Upload GitHub artifact
+      # ---------------------------------------------------------
+      - name: Upload Agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: artifacts/${{ steps.artifact.outputs.name }}.tar.gz
+          compression-level: 0
+          retention-days: 90
+
+      # ---------------------------------------------------------
+      # 6. Build summary
+      # ---------------------------------------------------------
+      - name: Build summary
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          NAME: ${{ steps.artifact.outputs.name }}
+          SHA256: ${{ steps.artifact.outputs.sha256 }}
+        run: |
+          echo "## Nodexa Agent Build - Nodex Nomad" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Board | Nodex Nomad (${TARGET}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | $VERSION |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OTA file | \`${NAME}.tar.gz\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SHA256 | \`$SHA256\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Pin on a device" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo "POST /devices/<device_id>/pin-agent" >> "$GITHUB_STEP_SUMMARY"
+          echo "{\"version\": \"$VERSION\", \"url\": \"<hosted URL of ${NAME}.tar.gz>\", \"sha256\": \"$SHA256\"}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------
+  # Publish to the admin dashboard (see publish-nomad.yml). Runs even
+  # when the build was skipped, so an already-built version that never
+  # made it to the dashboard still gets published; one that's already
+  # there is skipped by publish-nomad.yml's first check.
+  # ---------------------------------------------------------
+  publish:
+    name: Publish to dashboard
+    needs: [check, build]
+    if: ${{ !failure() && !cancelled() }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/publish-nomad.yml
+    with:
+      component: supervisor
+      version: ${{ needs.check.outputs.version }}
+    secrets:
+      ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}

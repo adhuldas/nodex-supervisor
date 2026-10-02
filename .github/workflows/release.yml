@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'AGENT_VERSION'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force release even if release/tag already exists'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  check-release:
+    name: Check Version & Release Status
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version and check existing release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ ! -f AGENT_VERSION ]; then
+            echo "Error: AGENT_VERSION file not found"
+            exit 1
+          fi
+
+          VERSION="$(tr -d '[:space:]' < AGENT_VERSION)"
+          if [ -z "$VERSION" ]; then
+            echo "Error: VERSION file is empty"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+          echo "Found version: ${VERSION} (tag: ${TAG})"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force release requested via workflow_dispatch."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if GitHub release already exists for this tag
+          if gh release view "${TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::notice ::Release ${TAG} already exists on ${{ github.repository }}. Skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Also check if Git tag already exists on remote
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            echo "::notice ::Tag ${TAG} already exists on remote. Skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Release ${TAG} does not exist yet. Proceeding with release build."
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.os }}-${{ matrix.display_arch || matrix.arch }})
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: linux
+            arch: arm
+            goarm: '7'
+            display_arch: armv7
+          - os: windows
+            arch: amd64
+            ext: .exe
+          - os: windows
+            arch: arm64
+            ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build and package binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ needs.check-release.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          DISPLAY_ARCH="${{ matrix.display_arch || matrix.arch }}"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          LDFLAGS="-s -w \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.AgentVersion=${VERSION} \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=${VERSION} \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.Commit=${COMMIT:0:12} \
+            -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${BUILD_DATE}"
+
+          BIN_NAME="nodex-supervisor${{ matrix.ext }}"
+          ALIAS_NAME="nodexa-agent${{ matrix.ext }}"
+
+          STAGE_DIR="stage-${{ matrix.os }}-${DISPLAY_ARCH}"
+          mkdir -p "${STAGE_DIR}"
+
+          go build -trimpath -ldflags "${LDFLAGS}" -o "${STAGE_DIR}/${BIN_NAME}" ./cmd/nodexa-agent
+          cp "${STAGE_DIR}/${BIN_NAME}" "${STAGE_DIR}/${ALIAS_NAME}"
+
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            (cd "${STAGE_DIR}" && zip -r "../nodex-supervisor_${{ matrix.os }}_${DISPLAY_ARCH}.zip" .)
+            tar -czf "nodex-supervisor_${{ matrix.os }}_${DISPLAY_ARCH}.tar.gz" -C "${STAGE_DIR}" .
+          else
+            tar -czf "nodex-supervisor_${{ matrix.os }}_${DISPLAY_ARCH}.tar.gz" -C "${STAGE_DIR}" .
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.os }}-${{ matrix.display_arch || matrix.arch }}
+          path: nodex-supervisor_*.*
+
+  publish:
+    name: Publish GitHub Release
+    needs: [check-release, build]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: assets-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate Checksums
+        working-directory: dist
+        run: |
+          sha256sum nodex-supervisor_* > checksums.txt
+
+      - name: Create Git Tag and GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-release.outputs.tag }}
+          name: Release ${{ needs.check-release.outputs.tag }}
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,27 @@
+# Build outputs
+/build/
+/dist/
+/bin/
+
+# Go artifacts
+*.test
+*.out
+
+# Python test harness
+tests/.venv/
+tests/.pytest_cache/
+tests/**/__pycache__/
+tests/**/*.pyc
+test-results-*.xml
+__pycache__/
+*.pyc
+
+# Local secrets & environment
+/.env
+/.env.*.local
+
+# Editor & OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
