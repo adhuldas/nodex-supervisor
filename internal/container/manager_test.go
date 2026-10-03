@@ -365,3 +365,22 @@ func TestApplyEnvSetsDeviceEnvOverImageEnv(t *testing.T) {
 		t.Fatalf("env = %v, want %v", got.Process.Env, want)
 	}
 }
+
+// Stats and Logs hold m.mu; reading the engine through Engine() there
+// deadlocked the heartbeat loop on Docker hosts.
+func TestDockerStatsAndLogsDoNotDeadlock(t *testing.T) {
+	mgr := NewManager(t.TempDir(), "", t.TempDir(), t.TempDir(), "runc", t.TempDir(), nil)
+	mgr.SetEngine(EngineDocker)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = mgr.Stats("app")
+		_, _ = mgr.Logs("app", 10)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stats/Logs did not return: m.mu taken twice")
+	}
+}

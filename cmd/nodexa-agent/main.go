@@ -350,13 +350,17 @@ func main() {
 					containers := containerReport.next(containerMgr)
 					apps := appUsage.sample(containerMgr, report)
 					loc := locationResolver.Resolve(ctx)
-					isWifi := wifi.Supported(ctx)
-					isGSM := gsm.Available(ctx)
+					// nmcli/mmcli can stall on D-Bus; this whole loop is one
+					// goroutine, so a stuck probe would stop every heartbeat.
+					probeCtx, cancelProbe := context.WithTimeout(ctx, 15*time.Second)
+					isWifi := wifi.Supported(probeCtx)
+					isGSM := gsm.Available(probeCtx)
 					var wifiNets []wifi.WifiNetwork
 					if isWifi {
-						wifiNets, _ = wifi.Scan(ctx)
+						wifiNets, _ = wifi.Scan(probeCtx)
 					}
-					conns, wifiSSID := wifi.DetectConnections(ctx)
+					conns, wifiSSID := wifi.DetectConnections(probeCtx)
+					cancelProbe()
 					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
 					if resp != nil {
 						if resp.FleetTransfer != nil {

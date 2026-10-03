@@ -898,8 +898,9 @@ func (m *NodexaContainerManager) Stats(name string) (NodexaContainerStats, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
-		return dockerStats(context.Background(), m.Engine().cliBinary(), name)
+	// engineLocked, not Engine(): m.mu is already held and isn't reentrant.
+	if eng := m.engineLocked(); eng == EngineDocker || eng == EngineNerdctl {
+		return dockerStats(context.Background(), eng.cliBinary(), name)
 	}
 
 	bundleDir := filepath.Join(m.containerDir, name)
@@ -973,8 +974,9 @@ func (m *NodexaContainerManager) Logs(name string, tail int) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
-		return dockerLogs(context.Background(), m.Engine().cliBinary(), name, tail)
+	// engineLocked, not Engine(): m.mu is already held and isn't reentrant.
+	if eng := m.engineLocked(); eng == EngineDocker || eng == EngineNerdctl {
+		return dockerLogs(context.Background(), eng.cliBinary(), name, tail)
 	}
 
 	bundleDir := filepath.Join(m.containerDir, name)
