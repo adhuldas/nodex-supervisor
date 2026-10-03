@@ -28,6 +28,8 @@ Or from a local checkout:
 ./install.sh --fleet <your-fleet-id>
 ```
 
+The supervisor registers with `https://nodex.elzora.tech/backend` by default. Point it at another backend with `--cloud-url <url>` (`-CloudUrl <url>` on Windows); the installer writes both values to `config.json`.
+
 ### Quick Install (Windows)
 
 Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-supervisor\bin`, prompts for your Fleet ID, adds it to your user `PATH`, and starts it through a `nodex-supervisor` scheduled task. Run from an elevated (Administrator) PowerShell, the task starts at every boot; otherwise it starts when you log on:

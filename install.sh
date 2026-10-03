@@ -16,6 +16,8 @@ BIN_NAME="nodex-supervisor"
 ALIAS_NAME="nodexa-agent"
 TARGET_VERSION=""
 FLEET_ID="${FLEET_ID:-}"
+# nodexa-backend the device registers with; overridable for staging/self-hosted.
+CLOUD_URL="${CLOUD_URL:-https://nodex.elzora.tech/backend}"
 DO_UNINSTALL=0
 
 INSTALL_TAILSCALE=""
@@ -34,6 +36,10 @@ while [ $# -gt 0 ]; do
             FLEET_ID="$2"
             shift 2
             ;;
+        --cloud-url)
+            CLOUD_URL="$2"
+            shift 2
+            ;;
         --install-tailscale|--yes-tailscale)
             INSTALL_TAILSCALE=1
             shift
@@ -47,7 +53,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--dir <path>] [--version <version>] [--fleet <id>] [--install-tailscale|--skip-tailscale] [--uninstall]"
+            echo "Usage: $0 [--dir <path>] [--version <version>] [--fleet <id>] [--cloud-url <url>] [--install-tailscale|--skip-tailscale] [--uninstall]"
             exit 0
             ;;
         *)
@@ -400,7 +406,8 @@ configure_fleet() {
         fi
     fi
 
-    if [ -n "${FLEET_ID}" ]; then
+    # Always written: without cloud_url the supervisor never registers.
+    if [ -n "${CLOUD_URL}" ] || [ -n "${FLEET_ID}" ]; then
         local cfg_dir="/etc/nodexa"
         if [ "${INSTALL_DIR}" != "/usr/local/bin" ] && [ -w "${INSTALL_DIR}" ]; then
             cfg_dir="${INSTALL_DIR}"
@@ -409,7 +416,11 @@ configure_fleet() {
         fi
 
         local cfg_file="${cfg_dir}/config.json"
-        local json_content="{\"fleet_id\": \"${FLEET_ID}\"}"
+        local json_content="{\"cloud_url\": \"${CLOUD_URL%/}\""
+        if [ -n "${FLEET_ID}" ]; then
+            json_content="${json_content}, \"fleet_id\": \"${FLEET_ID}\""
+        fi
+        json_content="${json_content}}"
 
         if [ -w "${cfg_dir}" ]; then
             echo "${json_content}" > "${cfg_file}"
@@ -418,7 +429,7 @@ configure_fleet() {
             echo "${json_content}" | sudo tee "${cfg_file}" >/dev/null
             sudo chmod 0644 "${cfg_file}"
         fi
-        echo "==> Configured Fleet ID in ${cfg_file}"
+        echo "==> Configured cloud URL ${CLOUD_URL%/}${FLEET_ID:+ and Fleet ID ${FLEET_ID}} in ${cfg_file}"
     fi
 }
 

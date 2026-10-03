@@ -148,6 +148,10 @@ func main() {
 		// A confirmed fleet transfer overrides the flash-time fleet.
 		fleetID := resolveFleetID(stateStore, provisioningData.FleetID)
 		go registerWithBackend(ctx, backendClient, deviceIdentity, fleetID, bus, &backendToken, registeredCh)
+	} else {
+		// Otherwise the device runs standalone with nothing in the log to
+		// say why it never shows up in the cloud.
+		log.Println("warning: no cloud URL configured (cloud_url in config.json); device will not register or send heartbeats")
 	}
 
 	// --- VPN (ops-only direct SSH access; see internal/vpn) ---

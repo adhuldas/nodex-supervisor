@@ -5,7 +5,7 @@
 #   irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1 | iex
 #
 # Or with parameters:
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-InstallDir <path>] [-Version <version>] [-FleetId <id>] [-Uninstall]
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-InstallDir <path>] [-Version <version>] [-FleetId <id>] [-CloudUrl <url>] [-Uninstall]
 
 [CmdletBinding()]
 param(
@@ -18,6 +18,8 @@ param(
     ),
     [string]$Version = "",
     [string]$FleetId = "",
+    # nodexa-backend the device registers with; overridable for staging/self-hosted.
+    [string]$CloudUrl = "https://nodex.elzora.tech/backend",
     [switch]$InstallTailscale,
     [switch]$SkipTailscale,
     [switch]$Uninstall
@@ -69,12 +71,16 @@ function Configure-Fleet {
             $TargetFleetId = Read-Host "Enter Nodexa Fleet ID (leave empty to skip)"
         }
     }
+    # Always written: without cloud_url the supervisor never registers.
+    $configFile = Join-Path $TargetDir "config.json"
+    $configObj = [ordered]@{ "cloud_url" = $CloudUrl.TrimEnd('/') }
     if ($TargetFleetId) {
-        $configFile = Join-Path $TargetDir "config.json"
-        $configObj = @{ "fleet_id" = $TargetFleetId }
-        $configObj | ConvertTo-Json | Set-Content -Path $configFile -Encoding UTF8
-        Write-Host "==> Configured Fleet ID in $configFile"
+        $configObj["fleet_id"] = $TargetFleetId
     }
+    # No byte-order mark: Windows PowerShell's -Encoding UTF8 adds one, and
+    # the supervisor's JSON parser rejects it.
+    [IO.File]::WriteAllText($configFile, ($configObj | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+    Write-Host "==> Configured cloud URL $($configObj.cloud_url) in $configFile"
 }
 
 $TaskName = "nodex-supervisor"
