@@ -114,7 +114,6 @@ type RegisterRequest struct {
 	Hostname            string  `json:"hostname,omitempty"`
 	FleetID             *string `json:"fleet_id,omitempty"`
 	DeviceType          *string `json:"device_type,omitempty"`
-	IsThirdParty        *bool   `json:"is_third_party,omitempty"`
 }
 
 // RegisterResponse mirrors nodexa-backend's DeviceRegisterResponse.

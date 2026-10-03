@@ -557,6 +557,7 @@ func registerWithBackend(ctx context.Context, client *backend.Client, id *identi
 			return
 		}
 		bus.Emit(events.DeviceRegisterFailed, "backend registration failed, will retry", events.Fieldsf("error", "%s", err))
+		log.Printf("warning: backend registration: %v (retrying in %s)", err, backoff)
 
 		select {
 		case <-ctx.Done():
@@ -577,7 +578,6 @@ func registerRequest(id *identity.Identity, fleetID *string) backend.RegisterReq
 		provider = "third_party"
 	}
 	deviceType := "third_party"
-	isThirdParty := true
 	return backend.RegisterRequest{
 		DeviceID:            id.DeviceID,
 		HardwareFingerprint: id.Fingerprint,
@@ -588,7 +588,6 @@ func registerRequest(id *identity.Identity, fleetID *string) backend.RegisterReq
 		Hostname:            info.Hostname,
 		FleetID:             fleetID,
 		DeviceType:          &deviceType,
-		IsThirdParty:        &isThirdParty,
 	}
 }
 

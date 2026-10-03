@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,15 +55,27 @@ func TestRegisterSuccess(t *testing.T) {
 
 func TestRegisterThirdPartyDevicePayload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req RegisterRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, _ := io.ReadAll(r.Body)
+		// nodexa-backend's DeviceRegisterRequest is extra="forbid": any
+		// other key fails every registration with a 422.
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
+		accepted := map[string]bool{
+			"device_id": true, "hardware_fingerprint": true, "identity_provider": true,
+			"os_version": true, "agent_version": true, "architecture": true,
+			"hostname": true, "fleet_id": true, "device_type": true,
+		}
+		for key := range raw {
+			if !accepted[key] {
+				t.Errorf("register payload has %q, which nodexa-backend rejects", key)
+			}
+		}
+		var req RegisterRequest
+		_ = json.Unmarshal(body, &req)
 		if req.DeviceType == nil || *req.DeviceType != "third_party" {
 			t.Fatalf("expected device_type 'third_party', got %+v", req.DeviceType)
-		}
-		if req.IsThirdParty == nil || !*req.IsThirdParty {
-			t.Fatalf("expected is_third_party true, got %+v", req.IsThirdParty)
 		}
 		if req.IdentityProvider != "third_party" {
 			t.Fatalf("expected identity_provider 'third_party', got %s", req.IdentityProvider)
@@ -77,7 +90,6 @@ func TestRegisterThirdPartyDevicePayload(t *testing.T) {
 	defer srv.Close()
 
 	deviceType := "third_party"
-	isThirdParty := true
 	client := NewClient(srv.URL)
 	_, err := client.Register(context.Background(), RegisterRequest{
 		DeviceID:            "ndx_dev_third_party",
@@ -87,7 +99,6 @@ func TestRegisterThirdPartyDevicePayload(t *testing.T) {
 		AgentVersion:        "0.3.7",
 		Architecture:        "arm64",
 		DeviceType:          &deviceType,
-		IsThirdParty:        &isThirdParty,
 	})
 	if err != nil {
 		t.Fatalf("Register third-party device: %v", err)
