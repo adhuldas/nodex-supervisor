@@ -826,6 +826,15 @@ func applyAgentOTA(ctx context.Context, client *backend.Client, deviceID, token 
 	bus.Emit(events.UpdateAvailable, "pinned agent update detected from cloud", events.Fieldsf("version", "%s", target.Version))
 	log.Printf("cloud pinned agent update to version %s (current %s, url %s); starting OTA update", target.Version, version.AgentVersion, target.URL)
 
+	// Already installed by an earlier attempt whose restart didn't happen
+	// (agents before 0.4.0 restarted a unit name third-party hosts don't
+	// have): restart into it instead of downloading it again every tick.
+	if otaBinaryVersion(update.DefaultOTABinaryPath) == target.Version {
+		log.Printf("agent %s is already installed; restarting into it", target.Version)
+		_ = updater.Restart()
+		return
+	}
+
 	err := updater.ApplyFromURL(ctx, target, func(state string, pct int, err error) {
 		log.Printf("OTA update progress: state=%s progress=%d%%", state, pct)
 		prog := backend.AgentUpdateProgress{
