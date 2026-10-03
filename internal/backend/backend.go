@@ -33,7 +33,7 @@ import (
 // unreachable backend must never hang device boot or the health-report
 // ticker -- registration and heartbeats are best-effort from the device's
 // point of view.
-const defaultTimeout = 5 * time.Second
+const defaultTimeout = 15 * time.Second
 
 // Client talks to one nodexa-backend instance. Its base URL can be
 // switched at runtime (SetBaseURL) when the cloud URL is changed, so every
@@ -93,6 +93,13 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: defaultTimeout},
+	}
+}
+
+// CloseIdleConnections closes any idle keep-alive connections on the client's transport.
+func (c *Client) CloseIdleConnections() {
+	if c != nil && c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
 	}
 }
 
@@ -185,6 +192,24 @@ type HeartbeatRequest struct {
 
 	// DeviceType identifies the device runtime class ("native" vs "third_party").
 	DeviceType *string `json:"device_type,omitempty"`
+
+	// IsWifi indicates whether Wi-Fi hardware is supported on the device.
+	IsWifi *bool `json:"is_wifi,omitempty"`
+
+	// IsGSM indicates whether GSM / cellular hardware is supported on the device.
+	IsGSM *bool `json:"is_gsm,omitempty"`
+
+	// Connections lists active connection types (e.g. "ethernet", "wifi", "gsm").
+	Connections []string `json:"connections,omitempty"`
+
+	// WifiSSID is the SSID of the currently connected Wi-Fi network (if connected).
+	WifiSSID string `json:"wifi_ssid,omitempty"`
+
+	// WifiError reports an error if the device failed to connect to a configured Wi-Fi network.
+	WifiError string `json:"wifi_error,omitempty"`
+
+	// WifiNetworks lists available Wi-Fi networks in range.
+	WifiNetworks []WifiNetwork `json:"wifi_networks,omitempty"`
 }
 
 // AppUsage is one application's (container's) share of the device's
@@ -221,14 +246,24 @@ type AgentUpdateProgress struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// WifiNetwork represents an available Wi-Fi network detected by scanning.
+type WifiNetwork struct {
+	SSID          string `json:"ssid"`
+	SignalPercent int    `json:"signal_percent"`
+	Security      string `json:"security"`
+}
+
 // DeviceActionTarget mirrors nodexa-backend's DeviceActionTarget: one
 // dashboard-requested action, identified by ID so a repeated heartbeat
 // response never runs it twice.
 type DeviceActionTarget struct {
 	ID     string `json:"id"`
-	Action string `json:"action"` // "identify", "restart_services", "reboot", "purge_data", "shutdown", "start_container", "stop_container", "restart_container"
+	Action string `json:"action"` // "identify", "restart_services", "reboot", "purge_data", "shutdown", "start_container", "stop_container", "restart_container", "change_wifi", "set_wifi"
 	// Container names the target of the *_container actions.
 	Container string `json:"container,omitempty"`
+	// SSID and Password are used for the change_wifi / set_wifi actions.
+	SSID     string `json:"ssid,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // FleetTransferTarget is a dashboard-requested move to another fleet. The
@@ -384,7 +419,10 @@ func (c *Client) ReportOSUpdateProgress(ctx context.Context, deviceID, token str
 
 // ReportActionStatus calls POST /api/v1/devices/{deviceID}/action-status.
 func (c *Client) ReportActionStatus(ctx context.Context, deviceID, token string, report DeviceActionReport) error {
-	return c.reportProgress(ctx, "/api/v1/devices/"+deviceID+"/action-status", token, report)
+	var resp struct {
+		Status string `json:"status"`
+	}
+	return c.do(ctx, http.MethodPost, "/api/v1/devices/"+deviceID+"/action-status", token, report, &resp)
 }
 
 // ConfirmFleetTransfer calls POST /api/v1/devices/{deviceID}/fleet-transfer/confirm

@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -582,7 +583,8 @@ func (u *OSUpdater) writeBootEnv(bootDev, slot string) error {
 	defer u.unmount(dir)
 
 	data := []byte(formatBootEnv(slot, true))
-	if old, err := os.ReadFile(filepath.Join(dir, bootEnvName)); err == nil && bytes.HasPrefix(old, []byte(grubEnvHeader)) {
+	old, err := os.ReadFile(filepath.Join(dir, bootEnvName))
+	if (err == nil && bytes.HasPrefix(old, []byte(grubEnvHeader))) || isGrubBoot(dir) {
 		data = grubEnvBlock(data)
 	}
 	tmp := filepath.Join(dir, bootEnvName+".tmp")
@@ -590,6 +592,19 @@ func (u *OSUpdater) writeBootEnv(bootDev, slot string) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, bootEnvName))
+}
+
+func isGrubBoot(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "EFI", "BOOT", "grub.cfg")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, "EFI")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, "boot", "grub")); err == nil {
+		return true
+	}
+	return runtime.GOARCH == "amd64" || runtime.GOARCH == "386"
 }
 
 func formatBootEnv(slot string, upgrade bool) string {

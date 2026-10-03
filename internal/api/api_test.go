@@ -118,4 +118,43 @@ func TestUpdateAPI(t *testing.T) {
 	}
 }
 
+func TestWifiNetworksAPI(t *testing.T) {
+	server := New("/tmp/test-agent.sock", Deps{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/network/wifi/networks", nil)
+	w := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var nets []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&nets); err != nil {
+		t.Fatalf("decode networks: %v", err)
+	}
+}
+
+func TestWifiChangeAPI(t *testing.T) {
+	bus := events.NewBus(10)
+	server := New("/tmp/test-agent.sock", Deps{Events: bus})
+
+	// Invalid request (empty SSID)
+	body := `{"ssid":"","password":"short"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/network/wifi", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty SSID, got %d", w.Code)
+	}
+
+	// Invalid password (too short)
+	bodyShort := `{"ssid":"HomeWiFi","password":"short"}`
+	reqShort := httptest.NewRequest(http.MethodPost, "/v1/network/wifi", bytes.NewBufferString(bodyShort))
+	wShort := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(wShort, reqShort)
+	if wShort.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short password, got %d", wShort.Code)
+	}
+}
+
+
 

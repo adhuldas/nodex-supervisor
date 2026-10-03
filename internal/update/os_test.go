@@ -236,6 +236,32 @@ func TestOSUpdaterApplyKeepsGrubEnvFormat(t *testing.T) {
 	}
 }
 
+func TestOSUpdaterApplyWritesGrubEnvWhenGrubDetectedEvenIfOldEnvWasPlain(t *testing.T) {
+	env := newOSTestEnv(t, "a", "1.0.0", 64*sectorSize)
+	env.newRootVersion = "1.1.0"
+	env.newKernel = "bzImage"
+	artifact := makeDiskImage([]byte("rootfs"))
+	srv := serve(t, artifact)
+
+	bootDir := filepath.Join(env.u.mountDir, "boot")
+	os.MkdirAll(filepath.Join(bootDir, "EFI", "BOOT"), 0o755)
+	os.WriteFile(filepath.Join(bootDir, "EFI", "BOOT", "grub.cfg"), []byte("# grub cfg"), 0o644)
+	// Existing nodexa.env is plain text (without GRUB header)
+	os.WriteFile(filepath.Join(bootDir, bootEnvName), []byte(formatBootEnv("a", false)), 0o644)
+
+	if err := env.u.Apply(context.Background(), backend.AgentUpdateTarget{Version: "1.1.0", URL: srv.URL}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	bootEnv, _ := os.ReadFile(filepath.Join(bootDir, bootEnvName))
+	if len(bootEnv) != grubEnvSize {
+		t.Fatalf("nodexa.env is %d bytes, want a %d-byte GRUB environment block", len(bootEnv), grubEnvSize)
+	}
+	want := grubEnvHeader + "nodexa_slot=b\nnodexa_upgrade=1\nnodexa_tries=0\n#"
+	if !strings.HasPrefix(string(bootEnv), want) {
+		t.Fatalf("nodexa.env = %q, want prefix %q", bootEnv, want)
+	}
+}
+
 func TestOSUpdaterApplyRejectsOtherDeviceTypeImage(t *testing.T) {
 	env := newOSTestEnv(t, "a", "1.0.0", 64*sectorSize)
 	env.newRootVersion = "1.1.0"

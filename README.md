@@ -18,9 +18,14 @@ Installs `nodex-supervisor` to `/usr/local/bin`, prompts for your Fleet ID, and 
 curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh
 ```
 
-You can also pass the Fleet ID non-interactively:
+You can also pass the Fleet ID non-interactively (useful for unattended installs):
 ```bash
-./install.sh --fleet-id <your-fleet-id>
+curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh -s -- --fleet <your-fleet-id>
+```
+
+Or from a local checkout:
+```bash
+./install.sh --fleet <your-fleet-id>
 ```
 
 ### Quick Install (Windows)
@@ -31,7 +36,12 @@ Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-s
 irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1 | iex
 ```
 
-Or non-interactively:
+You can also pass the Fleet ID non-interactively (useful for unattended installs):
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1))) -FleetId <your-fleet-id>
+```
+
+Or from a local checkout:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -FleetId <your-fleet-id>
 ```

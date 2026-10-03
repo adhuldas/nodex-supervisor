@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/backend"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/container"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/events"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/wifi"
 )
 
 // identifyDuration is how long the "identify" action blinks the board LEDs.
@@ -39,10 +42,18 @@ type actionRunner struct {
 	deviceID   string
 	containers *container.NodexaContainerManager
 	volumesDir string
+	bus        *events.Bus
+	onDone     func()
 
 	mu      sync.Mutex
 	lastID  string
 	running bool
+}
+
+func (r *actionRunner) IsRunning() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running
 }
 
 // handle starts target in its own goroutine unless it has already been
@@ -62,6 +73,9 @@ func (r *actionRunner) handle(ctx context.Context, token string, target backend.
 			r.mu.Lock()
 			r.running = false
 			r.mu.Unlock()
+			if r.onDone != nil {
+				r.onDone()
+			}
 		}()
 		r.run(ctx, token, target)
 	}()
@@ -111,6 +125,25 @@ func (r *actionRunner) dispatch(ctx context.Context, token string, target backen
 		return r.power(ctx, token, target.ID, "reboot")
 	case "shutdown":
 		return r.power(ctx, token, target.ID, "poweroff")
+	case "change_wifi", "set_wifi":
+		ssid := target.SSID
+		if ssid == "" {
+			ssid = target.Container
+		}
+		if ssid == "" {
+			return errors.New("missing wifi ssid in action target")
+		}
+		creds := wifi.Credentials{
+			SSID:     ssid,
+			Password: target.Password,
+		}
+		if err := wifi.Change(ctx, creds); err != nil {
+			return err
+		}
+		if r.bus != nil {
+			r.bus.Emit(events.NetworkReady, "wifi network changed via cloud action", events.Fieldsf("ssid", "%s", creds.SSID))
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported action %q", target.Action)
 	}
@@ -136,8 +169,29 @@ func (r *actionRunner) report(ctx context.Context, token, id, state string, err 
 	if err != nil {
 		rep.Error = err.Error()
 	}
-	if rerr := r.client.ReportActionStatus(ctx, r.deviceID, token, rep); rerr != nil {
-		log.Printf("warning: reporting device action %s: %v", id, rerr)
+
+	maxAttempts := 1
+	if state == "completed" || state == "failed" {
+		maxAttempts = 10
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 || state == "completed" || state == "failed" {
+			r.client.CloseIdleConnections()
+		}
+		if rerr := r.client.ReportActionStatus(ctx, r.deviceID, token, rep); rerr != nil {
+			log.Printf("warning: reporting device action %s (%s) [attempt %d/%d]: %v", id, state, attempt, maxAttempts, rerr)
+			if attempt < maxAttempts {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Duration(attempt) * time.Second):
+				}
+			}
+		} else {
+			log.Printf("device action %s reported as %s", id, state)
+			return
+		}
 	}
 }
 

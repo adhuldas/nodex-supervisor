@@ -26,6 +26,7 @@ import (
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/container"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/deploy"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/events"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/gsm"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/health"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/identity"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/location"
@@ -242,7 +243,7 @@ func main() {
 
 	// --- dashboard-requested device actions (identify, reboot, ...) ---
 	transfers := &fleetTransfers{client: backendClient, deviceID: deviceIdentity.DeviceID, store: stateStore, provisioned: provisioningData.FleetID, deployMgr: deployMgr}
-	actions := &actionRunner{client: backendClient, deviceID: deviceIdentity.DeviceID, containers: containerMgr, volumesDir: cfg.DataDir + "/volumes"}
+	actions := &actionRunner{client: backendClient, deviceID: deviceIdentity.DeviceID, containers: containerMgr, volumesDir: cfg.DataDir + "/volumes", bus: bus}
 	cloudURLs := &cloudURLChanges{
 		client: backendClient, identity: deviceIdentity, store: stateStore, provisioned: provisioningData.CloudURL,
 		fleetID: func() *string { return resolveFleetID(stateStore, provisioningData.FleetID) },
@@ -301,6 +302,19 @@ func main() {
 		default:
 		}
 	})
+	actionDoneCh := make(chan struct{}, 1)
+	triggerHeartbeat := func() {
+		select {
+		case actionDoneCh <- struct{}{}:
+		default:
+		}
+	}
+	actions.onDone = triggerHeartbeat
+	wifi.OnConnected = func() {
+		if !actions.IsRunning() {
+			triggerHeartbeat()
+		}
+	}
 	go func() {
 		ticker := time.NewTicker(cfg.HealthInterval)
 		defer ticker.Stop()
@@ -317,6 +331,10 @@ func main() {
 				}
 			}()
 
+			if actions.IsRunning() {
+				return
+			}
+
 			report := healthChecker.Check()
 			bus.Emit(events.HealthReport, "periodic health report", map[string]string{
 				"overall": string(report.Overall),
@@ -328,7 +346,14 @@ func main() {
 					containers := containerReport.next(containerMgr)
 					apps := appUsage.sample(containerMgr, report)
 					loc := locationResolver.Resolve(ctx)
-					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, vpnIP.Get(), loc, agentUpdater, osUpdater)
+					isWifi := wifi.Supported(ctx)
+					isGSM := gsm.Available(ctx)
+					var wifiNets []wifi.WifiNetwork
+					if isWifi {
+						wifiNets, _ = wifi.Scan(ctx)
+					}
+					conns, wifiSSID := wifi.DetectConnections(ctx)
+					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
 					if resp != nil {
 						if resp.FleetTransfer != nil {
 							transfers.handle(ctx, token, *resp.FleetTransfer)
@@ -380,6 +405,8 @@ func main() {
 				registeredCh = nil // disable this case after first fire
 				doTick()
 			case <-containerStateCh:
+				doTick()
+			case <-actionDoneCh:
 				doTick()
 			case <-ticker.C:
 				doTick()
@@ -616,7 +643,7 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 // fatal -- heartbeats are best-effort, same as registration itself.
 // Returns nil on failure, or the response the caller uses to detect a
 // deployment revision change or pinned agent/OS update.
-func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, tailscaleIP string, location *backend.Location, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
+func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, tailscaleIP string, location *backend.Location, isWifi bool, isGSM bool, conns []string, wifiSSID string, wifiNets []wifi.WifiNetwork, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
 	var ip *string
 	if tailscaleIP != "" {
 		ip = &tailscaleIP
@@ -640,6 +667,17 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 	}
 
 	deviceType := "third_party"
+	var backendWifiNets []backend.WifiNetwork
+	if isWifi {
+		for _, wn := range wifiNets {
+			backendWifiNets = append(backendWifiNets, backend.WifiNetwork{
+				SSID:          wn.SSID,
+				SignalPercent: wn.SignalPercent,
+				Security:      wn.Security,
+			})
+		}
+	}
+
 	resp, err := client.Heartbeat(ctx, deviceID, token, backend.HeartbeatRequest{
 		OSVersion:         osVersion,
 		AgentVersion:      version.AgentVersion,
@@ -664,6 +702,12 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		Location:          location,
 		Apps:              apps,
 		DeviceType:        &deviceType,
+		IsWifi:            &isWifi,
+		IsGSM:             &isGSM,
+		Connections:       conns,
+		WifiSSID:          wifiSSID,
+		WifiError:         wifi.LastError(),
+		WifiNetworks:      backendWifiNets,
 	})
 	if err != nil {
 		log.Printf("warning: backend heartbeat: %v", err)

@@ -3,10 +3,10 @@
 # Installs directly to /usr/local/bin so it is immediately available on PATH.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh -s -- --fleet <fleet_id>
 #
 # Or with options:
-#   ./install.sh [--dir <install_dir>] [--version <tag_or_version>] [--fleet-id <id>] [--uninstall]
+#   ./install.sh [--dir <install_dir>] [--version <tag_or_version>] [--fleet <id>] [--uninstall]
 
 set -e
 
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
             TARGET_VERSION="$2"
             shift 2
             ;;
-        --fleet-id|-f)
+        --fleet-id|--fleet|-f)
             FLEET_ID="$2"
             shift 2
             ;;
@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--dir <path>] [--version <version>] [--fleet-id <id>] [--install-tailscale|--skip-tailscale] [--uninstall]"
+            echo "Usage: $0 [--dir <path>] [--version <version>] [--fleet <id>] [--install-tailscale|--skip-tailscale] [--uninstall]"
             exit 0
             ;;
         *)

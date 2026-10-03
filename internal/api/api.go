@@ -27,6 +27,7 @@ import (
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/system"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/update"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/version"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/wifi"
 )
 
 // Deps are the subsystems the API surfaces. Handlers only ever read from
@@ -82,6 +83,10 @@ func New(socketPath string, deps Deps) *Server {
 	mux.HandleFunc("POST /v1/networks", s.handleNetworkCreate)
 	mux.HandleFunc("DELETE /v1/networks/{name}", s.handleNetworkRemove)
 	mux.HandleFunc("GET /v1/networks/{name}", s.handleNetworkInspect)
+	mux.HandleFunc("GET /v1/network/wifi/networks", s.handleWifiNetworks)
+	mux.HandleFunc("GET /v1/wifi/networks", s.handleWifiNetworks)
+	mux.HandleFunc("POST /v1/network/wifi", s.handleWifiChange)
+	mux.HandleFunc("POST /v1/wifi", s.handleWifiChange)
 	mux.HandleFunc("GET /v1/update/status", s.handleUpdateStatus)
 	mux.HandleFunc("POST /v1/update/apply", s.handleUpdateApply)
 	mux.HandleFunc("POST /v1/update/rollback", s.handleUpdateRollback)
@@ -699,4 +704,56 @@ func (s *Server) handleUpdateRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]string{"status": "rolled back to base binary"})
 }
+
+// WifiChangeRequest is the body for POST /v1/network/wifi and POST /v1/wifi.
+type WifiChangeRequest struct {
+	SSID     string `json:"ssid"`
+	Password string `json:"password"`
+}
+
+// WifiChangeResponse is returned after applying Wi-Fi changes.
+type WifiChangeResponse struct {
+	Status string `json:"status"`
+	SSID   string `json:"ssid"`
+}
+
+func (s *Server) handleWifiNetworks(w http.ResponseWriter, r *http.Request) {
+	nets, err := wifi.Scan(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if nets == nil {
+		nets = []wifi.WifiNetwork{}
+	}
+	writeJSON(w, nets)
+}
+
+func (s *Server) handleWifiChange(w http.ResponseWriter, r *http.Request) {
+	var req WifiChangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
+		return
+	}
+	creds := wifi.Credentials{
+		SSID:     req.SSID,
+		Password: req.Password,
+	}
+	if err := creds.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := wifi.Change(r.Context(), creds); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if s.deps.Events != nil {
+		s.deps.Events.Emit(events.NetworkReady, "wifi network changed via api", events.Fieldsf("ssid", "%s", creds.SSID))
+	}
+	writeJSON(w, WifiChangeResponse{
+		Status: "applied",
+		SSID:   creds.SSID,
+	})
+}
+
 
