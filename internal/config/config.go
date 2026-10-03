@@ -26,8 +26,8 @@ const (
 	DefaultConfigFile = "/etc/nodexa/nodexa.conf"
 	DefaultConfigDir  = "/etc/nodexa/config.d"
 
-	DefaultRunDir       = "/run/nodexa"
-	DefaultSocketPath   = "/run/nodexa/agent.sock"
+	// DefaultRunDir is per-OS (rundir_*.go): macOS has no /run.
+	DefaultSocketPath   = DefaultRunDir + "/agent.sock"
 	DefaultDataDir      = "/var/lib/nodexa"
 	DefaultIdentityDir  = "/var/lib/nodexa/identity"
 	DefaultStateDir     = "/var/lib/nodexa/state"

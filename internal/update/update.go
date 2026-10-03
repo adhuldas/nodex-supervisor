@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/backend"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/config"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/events"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/version"
 )
@@ -37,7 +38,7 @@ import (
 const (
 	DefaultBaseBinaryPath = "/usr/bin/nodexa-agent"
 	DefaultOTABinaryPath  = "/var/lib/nodexa/bin/nodexa-agent"
-	DefaultAttemptPath    = "/run/nodexa/ota-boot-attempt"
+	DefaultAttemptPath    = config.DefaultRunDir + "/ota-boot-attempt"
 	MaxBootAttempts       = 3
 )
 

@@ -41,6 +41,24 @@ function Remove-FromUserPath {
 Write-Host "==> Uninstalling nodex-supervisor from $InstallDir..."
 $removed = $false
 
+# Stop and remove the scheduled task install.ps1 set up, before the exe goes
+# (Windows can't delete a running executable).
+$TaskName = "nodex-supervisor"
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "  Removed scheduled task $TaskName"
+    $removed = $true
+}
+Get-Process -Name "nodex-supervisor" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+foreach ($file in @("run-supervisor.ps1", "nodex-supervisor.log", "nodex-supervisor.log.1", "nodex-supervisor.out.log")) {
+    $path = Join-Path $InstallDir $file
+    if (Test-Path $path) {
+        Remove-Item -Path $path -Force
+    }
+}
+
 foreach ($bin in @($BinName, $AliasName)) {
     $binPath = Join-Path $InstallDir $bin
     if (Test-Path $binPath) {

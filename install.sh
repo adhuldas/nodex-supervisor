@@ -57,7 +57,142 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+SERVICE_NAME="nodex-supervisor"
+SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
+LAUNCHD_LABEL="com.nodexa.supervisor"
+LAUNCHD_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
+NEWSYSLOG_CONF="/etc/newsyslog.d/${SERVICE_NAME}.conf"
+MACOS_LOG="/var/log/${SERVICE_NAME}.log"
+
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+has_systemd() {
+    [ "${OS}" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+# Stops a running supervisor so its binary can be replaced.
+stop_service() {
+    if has_systemd && [ -f "${SYSTEMD_UNIT}" ]; then
+        as_root systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    elif [ "${OS}" = "darwin" ] && [ -f "${LAUNCHD_PLIST}" ]; then
+        as_root launchctl bootout "system/${LAUNCHD_LABEL}" 2>/dev/null || true
+    fi
+}
+
+# Runs the supervisor now and on every boot, so the device registers with
+# the cloud without anyone starting it by hand.
+setup_service() {
+    local bin="${INSTALL_DIR}/${BIN_NAME}"
+
+    if has_systemd; then
+        echo "==> Setting up systemd service ${SERVICE_NAME}..."
+        # No WatchdogSec: the agent stops petting the watchdog whenever the
+        # container runtime is unreachable, which on a third-party host
+        # (Docker restarting, no runtime installed yet) would kill it in a
+        # loop. Restart=always still covers crashes.
+        as_root tee "${SYSTEMD_UNIT}" >/dev/null <<EOF
+[Unit]
+Description=Nodex Supervisor - Nodexa device agent
+After=network-online.target docker.service containerd.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=${bin}
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+RuntimeDirectory=nodexa
+RuntimeDirectoryPreserve=restart
+StateDirectory=nodexa
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        as_root systemctl daemon-reload
+        as_root systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1
+        as_root systemctl restart "${SERVICE_NAME}"
+        sleep 3
+        if systemctl is-active --quiet "${SERVICE_NAME}"; then
+            echo "  [✓] ${SERVICE_NAME} is running and will start on boot."
+        else
+            echo "  [!] ${SERVICE_NAME} did not stay running. Check: sudo journalctl -u ${SERVICE_NAME} -n 50"
+        fi
+        echo "      Logs: sudo journalctl -u ${SERVICE_NAME} -f"
+    elif [ "${OS}" = "darwin" ]; then
+        echo "==> Setting up launchd daemon ${LAUNCHD_LABEL}..."
+        # launchd's default PATH lacks /usr/local/bin and /opt/homebrew/bin,
+        # where the docker and nerdctl CLIs live.
+        as_root tee "${LAUNCHD_PLIST}" >/dev/null <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCHD_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${bin}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${MACOS_LOG}</string>
+    <key>StandardErrorPath</key>
+    <string>${MACOS_LOG}</string>
+</dict>
+</plist>
+EOF
+        as_root chmod 0644 "${LAUNCHD_PLIST}"
+        # Rotate the log at 1 MB, keeping 5 compressed copies.
+        echo "${MACOS_LOG}  644  5  1024  *  JN" | as_root tee "${NEWSYSLOG_CONF}" >/dev/null
+        as_root launchctl bootout "system/${LAUNCHD_LABEL}" 2>/dev/null || true
+        as_root launchctl bootstrap system "${LAUNCHD_PLIST}"
+        sleep 3
+        if as_root launchctl print "system/${LAUNCHD_LABEL}" 2>/dev/null | grep -q 'state = running'; then
+            echo "  [✓] ${SERVICE_NAME} is running and will start on boot."
+        else
+            echo "  [!] ${SERVICE_NAME} did not stay running. Check: tail -n 50 ${MACOS_LOG}"
+        fi
+        echo "      Logs: tail -f ${MACOS_LOG}"
+    else
+        echo "  [!] No systemd or launchd found; ${SERVICE_NAME} will not start automatically."
+        echo "      Start it yourself with: sudo ${bin}"
+    fi
+}
+
+remove_service() {
+    if [ "${OS}" = "linux" ] && [ -f "${SYSTEMD_UNIT}" ]; then
+        as_root systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
+        as_root rm -f "${SYSTEMD_UNIT}"
+        as_root systemctl daemon-reload 2>/dev/null || true
+        echo "  Removed systemd service ${SERVICE_NAME}"
+    elif [ "${OS}" = "darwin" ] && [ -f "${LAUNCHD_PLIST}" ]; then
+        as_root launchctl bootout "system/${LAUNCHD_LABEL}" 2>/dev/null || true
+        as_root rm -f "${LAUNCHD_PLIST}" "${NEWSYSLOG_CONF}"
+        echo "  Removed launchd daemon ${LAUNCHD_LABEL}"
+    fi
+}
+
 if [ "${DO_UNINSTALL}" = "1" ]; then
+    remove_service
     echo "==> Uninstalling ${BIN_NAME} and ${ALIAS_NAME} from ${INSTALL_DIR}..."
     removed=0
     for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}"; do
@@ -97,7 +232,6 @@ if [ "${DO_UNINSTALL}" = "1" ]; then
     exit 0
 fi
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 RAW_ARCH="$(uname -m)"
 
 case "$RAW_ARCH" in
@@ -240,6 +374,7 @@ run_install() {
     local src="$1"
     local dest="$2"
 
+    stop_service
     mkdir -p "${INSTALL_DIR}" 2>/dev/null || sudo mkdir -p "${INSTALL_DIR}"
 
     if [ -w "${INSTALL_DIR}" ]; then
@@ -311,6 +446,7 @@ if [ -f "./cmd/nodexa-agent/main.go" ] && command -v go >/dev/null 2>&1; then
     rm -f "${TMP_BIN}"
 
     configure_fleet
+    setup_service
 
     echo "==> Successfully installed ${BIN_NAME} to ${TARGET}"
     echo "==> Alias ${ALIAS_NAME} linked to ${TARGET}"
@@ -342,6 +478,7 @@ if [ -z "${TAG_NAME}" ]; then
             TARGET="${INSTALL_DIR}/${BIN_NAME}"
             run_install "${GOPATH_BIN}" "${TARGET}"
             configure_fleet
+            setup_service
             echo "==> Successfully installed ${BIN_NAME} to ${TARGET}"
             "${TARGET}" version || true
             exit 0
@@ -386,6 +523,7 @@ TARGET="${INSTALL_DIR}/${BIN_NAME}"
 run_install "${EXTRACTED_BIN}" "${TARGET}"
 
 configure_fleet
+setup_service
 
 echo "==> Successfully installed ${BIN_NAME} to ${TARGET}"
 echo "==> Alias ${ALIAS_NAME} linked to ${TARGET}"

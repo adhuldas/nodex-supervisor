@@ -61,10 +61,10 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version", "--version", "-version", "-v":
-			fmt.Printf("nodexa-agent %s (os %s, commit %s)\n", version.AgentVersion, version.OSVersion, version.Commit)
+			fmt.Printf("nodex-supervisor %s (commit %s, built %s)\n", version.AgentVersion, version.Commit, version.BuildDate)
 			return
 		default:
-			fmt.Fprintf(os.Stderr, "usage: %s [version]\n", filepath.Base(os.Args[0]))
+			fmt.Fprintf(os.Stderr, "usage: %s [--version]\n", filepath.Base(os.Args[0]))
 			os.Exit(2)
 		}
 	}

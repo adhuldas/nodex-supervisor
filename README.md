@@ -12,7 +12,7 @@
 
 ### Quick Install (macOS & Linux)
 
-Installs `nodex-supervisor` to `/usr/local/bin`, prompts for your Fleet ID, and links the compatibility alias `nodexa-agent`:
+Installs `nodex-supervisor` to `/usr/local/bin`, prompts for your Fleet ID, links the compatibility alias `nodexa-agent`, and starts it as a service that also starts on every boot (systemd on Linux, launchd on macOS). The device registers with the cloud as soon as the service starts:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.sh | sh
@@ -30,7 +30,7 @@ Or from a local checkout:
 
 ### Quick Install (Windows)
 
-Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-supervisor\bin`, prompts for your Fleet ID, and adds it to your user `PATH`:
+Installs `nodex-supervisor.exe` and `nodexa-agent.exe` to `$LOCALAPPDATA\nodex-supervisor\bin`, prompts for your Fleet ID, adds it to your user `PATH`, and starts it through a `nodex-supervisor` scheduled task. Run from an elevated (Administrator) PowerShell, the task starts at every boot; otherwise it starts when you log on:
 
 ```powershell
 irm https://raw.githubusercontent.com/adhuldas/nodex-supervisor/main/install.ps1 | iex
@@ -64,9 +64,8 @@ ln -sf /usr/local/bin/nodex-supervisor /usr/local/bin/nodexa-agent
 Verify the installation:
 
 ```bash
-nodex-supervisor version
-# or
-nodexa-agent version
+nodex-supervisor --version
+# nodex-supervisor 0.3.8 (commit 96be907cc8d4, built 2026-10-03T09:11:40Z)
 ```
 
 ---
@@ -116,11 +115,17 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 ### Running as a Service
 
-On Nodexa OS and standard Linux distributions, `nodex-supervisor` runs as a systemd service (`nodexa-agent.service`):
+The install scripts set the service up and start it; re-running them updates the binary and restarts it, and uninstalling removes it.
 
-```bash
-systemctl status nodexa-agent.service
-```
+| Platform | Service | Status | Logs |
+|----------|---------|--------|------|
+| Linux (systemd) | `nodex-supervisor.service` | `systemctl status nodex-supervisor` | `journalctl -u nodex-supervisor -f` |
+| macOS (launchd) | `com.nodexa.supervisor` | `sudo launchctl print system/com.nodexa.supervisor` | `tail -f /var/log/nodex-supervisor.log` |
+| Windows | `nodex-supervisor` scheduled task | `Get-ScheduledTask nodex-supervisor` | `$LOCALAPPDATA\nodex-supervisor\bin\nodex-supervisor.log` |
+
+On Linux without systemd the installer can't start it automatically; run it manually (below) under your init system.
+
+On Nodexa OS itself the agent runs as `nodexa-agent.service`.
 
 ### Running Manually
 
@@ -131,14 +136,14 @@ nodex-supervisor
 When started, `nodex-supervisor`:
 1. Acquires an exclusive file lock to prevent duplicate supervisor instances.
 2. Initializes or restores the device identity.
-3. Sets up the control socket at `/run/nodexa/agent.sock`.
+3. Sets up the control socket at `/run/nodexa/agent.sock` (`/var/run/nodexa/agent.sock` on macOS).
 4. Connects to the configured cloud endpoint and begins health monitoring.
 
 ### Checking Version
 
 ```bash
-nodex-supervisor version
-# nodexa-agent 0.3.7 (os 0.3.7, commit 872a5e62b663)
+nodex-supervisor --version
+# nodex-supervisor 0.3.8 (commit 96be907cc8d4, built 2026-10-03T09:11:40Z)
 ```
 
 ---

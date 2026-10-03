@@ -82,3 +82,19 @@ func TestMaybeDelegateToOTARemovesOlderBinary(t *testing.T) {
 		t.Fatalf("older OTA binary kept: %v", err)
 	}
 }
+
+func TestOTABinaryVersionReadsBothNames(t *testing.T) {
+	for out, want := range map[string]string{
+		"nodex-supervisor 0.3.8 (commit abc, built 2026-10-03T00:00:00Z)": "0.3.8",
+		"nodexa-agent 0.3.1 (os 0.3.1, commit abc)":                       "0.3.1",
+		"something-else 1.0.0":                                            "",
+	} {
+		bin := filepath.Join(t.TempDir(), "agent")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho '"+out+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := otaBinaryVersion(bin); got != want {
+			t.Errorf("otaBinaryVersion(%q) = %q, want %q", out, got, want)
+		}
+	}
+}

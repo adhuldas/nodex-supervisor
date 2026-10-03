@@ -33,6 +33,32 @@ done
 echo "==> Uninstalling ${BIN_NAME} and ${ALIAS_NAME} from ${INSTALL_DIR}..."
 removed=0
 
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# Stop and remove the boot service install.sh set up, before the binary goes.
+SYSTEMD_UNIT="/etc/systemd/system/nodex-supervisor.service"
+LAUNCHD_LABEL="com.nodexa.supervisor"
+LAUNCHD_PLIST="/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist"
+if [ -f "${SYSTEMD_UNIT}" ]; then
+    as_root systemctl disable --now nodex-supervisor 2>/dev/null || true
+    as_root rm -f "${SYSTEMD_UNIT}"
+    as_root systemctl daemon-reload 2>/dev/null || true
+    echo "  Removed systemd service nodex-supervisor"
+    removed=1
+elif [ -f "${LAUNCHD_PLIST}" ]; then
+    as_root launchctl bootout "system/${LAUNCHD_LABEL}" 2>/dev/null || true
+    as_root rm -f "${LAUNCHD_PLIST}" /etc/newsyslog.d/nodex-supervisor.conf
+    echo "  Removed launchd daemon ${LAUNCHD_LABEL}"
+    removed=1
+fi
+
+
 for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}"; do
     if [ -e "${target_bin}" ] || [ -L "${target_bin}" ]; then
         if [ -w "${INSTALL_DIR}" ]; then

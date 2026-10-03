@@ -8,9 +8,10 @@ import (
 	"time"
 )
 
-// otaBinaryVersion asks the OTA binary for its version ("nodexa-agent
-// 0.3.1 (os ..., commit ...)", printed by agents since 0.1.5 without
-// starting up). Returns "" when it can't tell.
+// otaBinaryVersion asks the OTA binary for its version without starting
+// it up: "nodex-supervisor 0.3.8 (commit ..., built ...)", or
+// "nodexa-agent 0.3.1 (os ..., commit ...)" from builds before the
+// rename. Returns "" when it can't tell.
 func otaBinaryVersion(path string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -19,7 +20,7 @@ func otaBinaryVersion(path string) string {
 		return ""
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) < 2 || fields[0] != "nodexa-agent" {
+	if len(fields) < 2 || (fields[0] != "nodex-supervisor" && fields[0] != "nodexa-agent") {
 		return ""
 	}
 	return fields[1]

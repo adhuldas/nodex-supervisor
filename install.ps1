@@ -77,10 +77,99 @@ function Configure-Fleet {
     }
 }
 
+$TaskName = "nodex-supervisor"
+$WrapperName = "run-supervisor.ps1"
+
+# Stops a running supervisor so its exe can be replaced (Windows locks
+# running executables). The task goes first so its wrapper can't restart it.
+function Stop-SupervisorTask {
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
+    Get-Process -Name "nodex-supervisor" -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+# Runs the supervisor at startup (or at logon without admin rights) and keeps
+# it running, so the device registers without anyone starting it by hand.
+function Install-SupervisorTask {
+    param([string]$TargetDir)
+
+    Write-Host "==> Setting up scheduled task $TaskName..." -ForegroundColor Cyan
+    $wrapper = Join-Path $TargetDir $WrapperName
+    Set-Content -Path $wrapper -Encoding UTF8 -Value @'
+# Started by the "nodex-supervisor" scheduled task. Restarts the supervisor
+# whenever it exits; the previous run's log is kept as nodex-supervisor.log.1.
+$exe = Join-Path $PSScriptRoot 'nodex-supervisor.exe'
+$log = Join-Path $PSScriptRoot 'nodex-supervisor.log'
+while ($true) {
+    if (Test-Path $log) { Move-Item -Force $log "$log.1" }
+    Start-Process -FilePath $exe -NoNewWindow -Wait `
+        -RedirectStandardOutput (Join-Path $PSScriptRoot 'nodex-supervisor.out.log') `
+        -RedirectStandardError $log
+    Start-Sleep -Seconds 5
+}
+'@
+
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$wrapper`""
+    # No time limit: the default would stop the supervisor after 72 hours.
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $when = "at every boot"
+    } else {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+        $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive
+        $when = "when $($identity.Name) logs on"
+        Write-Host "  [!] Not running as Administrator: the supervisor will only start when you log on." -ForegroundColor Yellow
+        Write-Host "      Re-run the installer from an elevated PowerShell to start it at boot instead."
+    }
+
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $settings -Description "Nodex Supervisor - Nodexa device agent" -Force | Out-Null
+    Start-ScheduledTask -TaskName $TaskName
+
+    Start-Sleep -Seconds 3
+    if (Get-Process -Name "nodex-supervisor" -ErrorAction SilentlyContinue) {
+        Write-Host "  [✓] nodex-supervisor is running and will start $when." -ForegroundColor Green
+    } else {
+        Write-Host "  [!] nodex-supervisor did not stay running. Check $(Join-Path $TargetDir 'nodex-supervisor.log')" -ForegroundColor Yellow
+    }
+    Write-Host "      Logs: $(Join-Path $TargetDir 'nodex-supervisor.log')"
+}
+
+function Remove-SupervisorTask {
+    param([string]$TargetDir)
+
+    Stop-SupervisorTask
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        Write-Host "  Removed scheduled task $TaskName"
+    }
+    foreach ($file in @($WrapperName, "nodex-supervisor.log", "nodex-supervisor.log.1", "nodex-supervisor.out.log")) {
+        $path = Join-Path $TargetDir $file
+        if (Test-Path $path) {
+            Remove-Item -Path $path -Force
+        }
+    }
+}
+
 # ----------------- UNINSTALL FLOW -----------------
 if ($Uninstall) {
     Write-Host "==> Uninstalling nodex-supervisor from $InstallDir..."
     $removed = $false
+
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        $removed = $true
+    }
+    Remove-SupervisorTask -TargetDir $InstallDir
 
     foreach ($bin in @($BinName, $AliasName)) {
         $binPath = Join-Path $InstallDir $bin
@@ -276,6 +365,7 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
         if (-not (Test-Path $InstallDir)) {
             New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         }
+        Stop-SupervisorTask
         $target = Join-Path $InstallDir $BinName
         Move-Item -Path $BinName -Destination $target -Force
 
@@ -284,6 +374,7 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
 
         Add-ToUserPath $InstallDir
         Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
+        Install-SupervisorTask -TargetDir $InstallDir
 
         Write-Host "==> Successfully installed $BinName to $target"
         Write-Host "==> Alias $AliasName copied to $aliasTarget"
@@ -318,12 +409,14 @@ if (-not $release -or -not $release.tag_name) {
             if (-not (Test-Path $InstallDir)) {
                 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
             }
+            Stop-SupervisorTask
             $target = Join-Path $InstallDir $BinName
             Copy-Item -Path $gopathBin -Destination $target -Force
             $aliasTarget = Join-Path $InstallDir $AliasName
             Copy-Item -Path $gopathBin -Destination $aliasTarget -Force
             Add-ToUserPath $InstallDir
             Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
+            Install-SupervisorTask -TargetDir $InstallDir
 
             Write-Host "==> Successfully installed $BinName to $target"
             & $target version
@@ -390,6 +483,7 @@ try {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
+    Stop-SupervisorTask
     $target = Join-Path $InstallDir $BinName
     Move-Item -Path $extractedBin.FullName -Destination $target -Force
 
@@ -398,6 +492,7 @@ try {
 
     Add-ToUserPath $InstallDir
     Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
+    Install-SupervisorTask -TargetDir $InstallDir
 
     Write-Host "==> Successfully installed $BinName to $target"
     Write-Host "==> Alias $AliasName copied to $aliasTarget"
