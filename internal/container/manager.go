@@ -1033,6 +1033,20 @@ func (m *NodexaContainerManager) LogFilePath(name string) (string, error) {
 	return filepath.Join(bundleDir, "container.log"), nil
 }
 
+// LogFollow streams name's logs to w using the engine's native follow
+// mechanism. For Docker/nerdctl it runs `docker logs --follow` (blocking
+// until ctx is cancelled); for runc it returns handled=false so the caller
+// falls through to the existing file-polling path. This avoids the
+// goroutine/fd leak from rapid log switching in the UI that previously
+// starved tailscaled on resource-constrained third-party devices.
+func (m *NodexaContainerManager) LogFollow(ctx context.Context, name string, tail int, w io.Writer) (handled bool, err error) {
+	eng := m.Engine()
+	if eng != EngineDocker && eng != EngineNerdctl {
+		return false, nil // caller should use the runc file-polling path
+	}
+	return true, dockerLogsFollow(ctx, eng.cliBinary(), name, tail, w)
+}
+
 // LastLines returns at most n trailing lines of s, preserving a trailing
 // newline if present in the original text.
 func LastLines(s string, n int) string {

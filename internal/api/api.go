@@ -120,9 +120,15 @@ func (s *Server) ListenAndServe() error {
 		return fmt.Errorf("api: chmod socket: %w", err)
 	}
 	if err := chownToGroup(s.socket, s.deps.SocketGroup); err != nil {
-		// Non-fatal in dev environments without the nodexa group present,
-		// but always logged loudly since it affects who can reach the API.
-		s.deps.Events.Emit(events.HealthCheck, "could not set agent.sock group ownership", events.Fieldsf("error", "%v", err))
+		// The configured group (typically "nodexa") doesn't exist on this
+		// host -- common on third-party devices (someone's Mac, a random
+		// Linux box). Without widening the mode, the socket stays
+		// root:root 0660 and only root can reach the API, blocking every
+		// UI / nodexactl call that isn't over Tailscale SSH as root.
+		s.deps.Events.Emit(events.HealthCheck, "socket group not found, falling back to world-accessible socket", events.Fieldsf("error", "%v", err))
+		if chmodErr := os.Chmod(s.socket, 0o666); chmodErr != nil {
+			s.deps.Events.Emit(events.HealthCheck, "could not widen socket permissions", events.Fieldsf("error", "%v", chmodErr))
+		}
 	}
 
 	return s.http.Serve(l)
@@ -302,15 +308,32 @@ const logFollowPollInterval = 300 * time.Millisecond
 // envelope -- a streamed response has no single well-formed body to wrap
 // in one -- so nodexactl's client treats follow as plain text, not JSON.
 func (s *Server) handleContainerLogsFollow(w http.ResponseWriter, r *http.Request, name string, tail int) {
-	path, err := s.deps.Containers.LogFilePath(name)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err)
-		return
-	}
-
+	// Docker/nerdctl: use the engine's native `docker logs --follow` which
+	// is context-aware and cleans up immediately when the client disconnects,
+	// instead of the runc file-polling path whose accumulated goroutines and
+	// open fds from rapid container switching in the UI starved tailscaled
+	// on resource-constrained third-party devices.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
+		return
+	}
+
+	handled, err := s.deps.Containers.LogFollow(r.Context(), name, tail, w)
+	if err != nil {
+		// Only report errors if headers haven't been sent yet; once
+		// streaming starts, a broken pipe is expected on disconnect.
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if handled {
+		return // Docker/nerdctl native follow completed (or client disconnected)
+	}
+
+	// runc engine: fall through to the existing file-polling path.
+	path, err := s.deps.Containers.LogFilePath(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
 		return
 	}
 

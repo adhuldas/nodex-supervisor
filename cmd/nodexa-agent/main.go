@@ -605,6 +605,10 @@ func registerRequest(id *identity.Identity, fleetID *string) backend.RegisterReq
 // resolves the device's tailnet IPv4 address and stores it in ipHolder so
 // the heartbeat loop can report it to nodexa-backend for the support
 // team's direct SSH access.
+//
+// After the initial connection, it monitors VPN health and reconnects if
+// tailscaled drops (e.g. OOM-killed or stopped by systemd due to resource
+// pressure from rapid log switching in the UI).
 func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipHolder *vpnIPHolder) {
 	backoff := registerBackoffInitial
 	for {
@@ -614,12 +618,14 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 			// not have assigned the IP yet immediately after "up"
 			// succeeds, so a single attempt can fail transiently.
 			ipBackoff := registerBackoffInitial
+			resolved := false
 			for {
 				if ip, err := provider.IP(ctx); err != nil {
 					log.Printf("warning: vpn ip: %v (will retry)", err)
 				} else {
 					ipHolder.Set(ip)
-					return
+					resolved = true
+					break
 				}
 				select {
 				case <-ctx.Done():
@@ -629,6 +635,9 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 				if ipBackoff *= 2; ipBackoff > registerBackoffMax {
 					ipBackoff = registerBackoffMax
 				}
+			}
+			if resolved {
+				break // move on to the health-monitoring loop
 			}
 		} else {
 			log.Printf("warning: vpn connect failed, will retry: %v", err)
@@ -641,6 +650,37 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 		}
 		if backoff *= 2; backoff > registerBackoffMax {
 			backoff = registerBackoffMax
+		}
+	}
+
+	// Health-monitoring loop: periodically verify tailscaled is still
+	// running and reconnect if it dropped. On third-party devices,
+	// tailscaled can be killed by systemd watchdog or OOM when the host
+	// is under resource pressure; without this loop the VPN stays down
+	// forever after the initial successful connection.
+	const vpnHealthInterval = 2 * time.Minute
+	ticker := time.NewTicker(vpnHealthInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			st := provider.Status()
+			if st.Connected {
+				continue
+			}
+			log.Printf("warning: vpn health check: tailscale disconnected, attempting reconnect")
+			bus.Emit(events.VPNConnected, "vpn disconnected, reconnecting", nil)
+			if err := provider.Connect(ctx); err != nil {
+				log.Printf("warning: vpn reconnect failed: %v (will retry at next health check)", err)
+				continue
+			}
+			if ip, err := provider.IP(ctx); err == nil {
+				ipHolder.Set(ip)
+			}
+			bus.Emit(events.VPNConnected, "vpn reconnected after health check", nil)
+			log.Printf("vpn reconnected successfully")
 		}
 	}
 }

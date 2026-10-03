@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -501,3 +502,29 @@ func dockerRemoveImage(ctx context.Context, cli, name string) error {
 	}
 	return nil
 }
+
+// dockerLogsFollow streams a container's logs via `docker/nerdctl logs --follow`
+// to w, blocking until ctx is cancelled (client disconnect) or the container
+// stops. This is the Docker-native equivalent of the runc file-polling path
+// in handleContainerLogsFollow, and avoids the resource leak that the polling
+// approach causes when rapidly switching between containers.
+func dockerLogsFollow(ctx context.Context, cli, name string, tail int, w io.Writer) error {
+	args := []string{"logs", "--follow"}
+	if tail > 0 {
+		args = append(args, "--tail", fmt.Sprint(tail))
+	} else {
+		args = append(args, "--tail", "all")
+	}
+	args = append(args, name)
+
+	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Stdout = w
+	cmd.Stderr = w
+	err := cmd.Run()
+	// context.Canceled is normal: the client disconnected.
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
