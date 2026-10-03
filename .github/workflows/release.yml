@@ -206,3 +206,151 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Uploads every build to the admin dashboard's supervisor builds, where
+  # devices are offered updates from. A host is matched to a device type by
+  # what it registers with: Linux builds go under third_party-<arch> (the
+  # IDs the dashboard already uses), macOS and Windows under
+  # third_party-<os>-<arch>, so each host is only offered its own OS's
+  # build. <arch> is runtime.GOARCH, which devices report as architecture.
+  publish-dashboard:
+    name: Publish to admin dashboard
+    needs: [check-release, publish]
+    runs-on: ubuntu-latest
+    env:
+      DASHBOARD_API: https://nodexa.elzora.tech/accounts/api/v1
+      VERSION: ${{ needs.check-release.outputs.version }}
+      TAG: ${{ needs.check-release.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: assets-*
+          merge-multiple: true
+          path: dist
+
+      - name: Write release notes
+        run: |
+          PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -vx "${TAG}" | head -n 1 || true)"
+          {
+            echo "nodex-supervisor ${VERSION} for third-party hosts (Docker, nerdctl or runc)"
+            echo ""
+            if [ -n "${PREV_TAG}" ]; then
+              echo "Changes since ${PREV_TAG}:"
+              git log --no-merges --max-count=40 --format='- %s (%h)' "${PREV_TAG}..${GITHUB_SHA}"
+            else
+              echo "Initial release."
+            fi
+            echo ""
+            echo "Commit: ${GITHUB_SHA::7}"
+          } > release-notes.txt
+          cat release-notes.txt
+
+      - name: Sign in to dashboard
+        env:
+          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$ADMIN_USERNAME" ] || [ -z "$ADMIN_PASSWORD" ]; then
+            echo "ADMIN_USERNAME / ADMIN_PASSWORD secrets are not set."
+            exit 1
+          fi
+          # Session cookie login, same as the dashboard itself.
+          jq -n --arg email "$ADMIN_USERNAME" --arg password "$ADMIN_PASSWORD" \
+            '{email: $email, password: $password}' > "$RUNNER_TEMP/signin.json"
+          STATUS=$(curl -sS -o signin-response.json -w '%{http_code}' -c "$RUNNER_TEMP/dashboard-cookies" \
+            -H 'Content-Type: application/json' --data @"$RUNNER_TEMP/signin.json" \
+            "$DASHBOARD_API/auth/signin")
+          rm -f "$RUNNER_TEMP/signin.json"
+          if [ "$STATUS" != "200" ]; then
+            echo "Sign-in failed (HTTP $STATUS): $(cat signin-response.json)"
+            exit 1
+          fi
+
+      - name: Upload builds
+        run: |
+          JAR="$RUNNER_TEMP/dashboard-cookies"
+          {
+            echo "## Dashboard: nodex-supervisor ${VERSION}"
+            echo ""
+            echo "| Device type | Architecture | File | Result |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # <release file os>/<release file arch> <GOARCH>
+          for target in darwin/amd64:amd64 darwin/arm64:arm64 linux/amd64:amd64 linux/arm64:arm64 \
+                        linux/armv7:arm windows/amd64:amd64 windows/arm64:arm64; do
+            OS="${target%%/*}"
+            REST="${target#*/}"
+            FILE_ARCH="${REST%%:*}"
+            GOARCH="${REST#*:}"
+            FILE="nodex-supervisor_${OS}_${FILE_ARCH}.tar.gz"
+            if [ "$OS" = "linux" ]; then
+              DEVICE_TYPE="third_party-${GOARCH}"
+            else
+              DEVICE_TYPE="third_party-${OS}-${GOARCH}"
+            fi
+
+            BIN="nodex-supervisor"
+            [ "$OS" = "windows" ] && BIN="nodex-supervisor.exe"
+            if ! tar -tzf "dist/${FILE}" "./${BIN}" >/dev/null; then
+              echo "ERROR: dist/${FILE} has no ${BIN}"
+              exit 1
+            fi
+            SHA256="$(sha256sum "dist/${FILE}" | cut -d' ' -f1)"
+
+            STATUS=$(curl -sS -o upload-response.json -w '%{http_code}' -b "$JAR" \
+              --max-time 600 \
+              -F "device_type=${DEVICE_TYPE}" \
+              -F "version=${VERSION}" \
+              -F "architecture=${GOARCH}" \
+              -F "checksum=${SHA256}" \
+              -F "description=<release-notes.txt" \
+              -F "file=@dist/${FILE};filename=${FILE};type=application/octet-stream" \
+              "$DASHBOARD_API/supervisor-images")
+            case "$STATUS" in
+              201) RESULT="uploaded" ;;
+              409) RESULT="already on dashboard, skipped" ;;
+              *)
+                echo "Upload of ${FILE} as ${DEVICE_TYPE} failed (HTTP $STATUS): $(cat upload-response.json)"
+                exit 1
+                ;;
+            esac
+            echo "${DEVICE_TYPE} ${VERSION}: ${RESULT}"
+            echo "| \`${DEVICE_TYPE}\` | ${GOARCH} | \`${FILE}\` | ${RESULT} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Sign out of dashboard
+        if: always()
+        run: |
+          JAR="$RUNNER_TEMP/dashboard-cookies"
+          if [ -f "$JAR" ]; then
+            curl -sS -o /dev/null -b "$JAR" -X POST "$DASHBOARD_API/auth/signout" || true
+            rm -f "$JAR"
+          fi
+
+  # Once this release is on GitHub and the dashboard, the build artifacts
+  # of earlier runs are no longer needed: the release keeps its own copy
+  # of every file. This run's artifacts stay until the next release.
+  cleanup-artifacts:
+    name: Delete old build artifacts
+    needs: [publish, publish-dashboard]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete artifacts from earlier runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.name | startswith(\"assets-\")) | select(.workflow_run.id != ${GITHUB_RUN_ID}) | .id" \
+          | while read -r id; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}"
+              echo "Deleted artifact ${id}"
+            done

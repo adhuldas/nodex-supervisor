@@ -65,7 +65,7 @@ func TestRegisterThirdPartyDevicePayload(t *testing.T) {
 		accepted := map[string]bool{
 			"device_id": true, "hardware_fingerprint": true, "identity_provider": true,
 			"os_version": true, "agent_version": true, "architecture": true,
-			"hostname": true, "fleet_id": true, "device_type": true,
+			"hostname": true, "fleet_id": true, "device_type": true, "platform": true,
 		}
 		for key := range raw {
 			if !accepted[key] {

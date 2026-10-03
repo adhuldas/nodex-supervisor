@@ -592,6 +592,7 @@ func registerRequest(id *identity.Identity, fleetID *string) backend.RegisterReq
 		Hostname:            info.Hostname,
 		FleetID:             fleetID,
 		DeviceType:          &deviceType,
+		Platform:            runtime.GOOS,
 	}
 }
 

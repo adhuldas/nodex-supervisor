@@ -131,7 +131,7 @@ func (m *Manager) RemoveAll() error {
 	var firstErr error
 	keepImages := make(map[string]bool)
 	for _, c := range existing {
-		if c.DeploymentName == "" {
+		if c.DeploymentName == "" || c.External {
 			keepImages[c.Image] = true
 			continue
 		}
@@ -248,7 +248,8 @@ func (m *Manager) Apply(dep *backend.DeploymentResponse) error {
 	// removed services, and any seeded/demo container (nodexa-test).
 	if existing, err := m.containers.List(); err == nil {
 		for _, c := range existing {
-			if wanted[c.Name] {
+			// External: the host's own Docker containers, not ours to remove.
+			if wanted[c.Name] || c.External {
 				continue
 			}
 			if err := m.containers.Remove(c.Name); err != nil && firstErr == nil {

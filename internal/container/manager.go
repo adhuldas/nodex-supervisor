@@ -45,6 +45,9 @@ type NodexaContainerManager struct {
 	restartState map[string]restartState
 
 	engine EngineType
+
+	// Guards the record of images pulled for deployments (images.go).
+	pulledMu sync.Mutex
 }
 
 // NewManager creates a container manager.
@@ -303,8 +306,12 @@ func (m *NodexaContainerManager) RetireSeeds(keep map[string]bool) error {
 	if err != nil {
 		return err
 	}
+	eng := m.Engine()
 	for _, name := range seeded {
 		if keep[name] {
+			continue
+		}
+		if (eng == EngineDocker || eng == EngineNerdctl) && dockerIsExternal(context.Background(), eng.cliBinary(), name) {
 			continue
 		}
 		if err := m.Remove(name); err != nil {
@@ -675,6 +682,12 @@ func (m *NodexaContainerManager) Create(spec ServiceSpec, creds *RegistryCredent
 	bundleDir := filepath.Join(m.containerDir, name)
 	volumesDir := filepath.Join(m.volumesDir, name)
 
+	// A host container with this name isn't ours: stopping or replacing it
+	// would destroy someone else's workload, so the service fails instead.
+	if eng := m.Engine(); (eng == EngineDocker || eng == EngineNerdctl) && dockerIsExternal(context.Background(), eng.cliBinary(), name) {
+		return fmt.Errorf("container: %q is already used by a container nodex-supervisor didn't create; rename the service", name)
+	}
+
 	// Stop any existing instance so network ports, sockets, and cgroups are freed.
 	_ = m.Stop(name)
 
@@ -697,9 +710,14 @@ func (m *NodexaContainerManager) Create(spec ServiceSpec, creds *RegistryCredent
 			"state":   string(StatePullingImage),
 		})
 
+		// Only images the host didn't already have are ours to prune later.
+		hadImage := dockerImageExists(ctx, cli, spec.Image)
 		if err := dockerPull(ctx, cli, spec.Image, creds); err != nil {
 			m.clearTransient(name)
 			return fmt.Errorf("container: deploying %q: %w", name, err)
+		}
+		if !hadImage {
+			m.recordPulledImage(spec.Image)
 		}
 
 		m.setTransient(NodexaContainer{

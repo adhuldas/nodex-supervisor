@@ -12,17 +12,19 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -192,7 +194,7 @@ func (u *AgentUpdater) ApplyFromURL(ctx context.Context, target backend.AgentUpd
 	}
 
 	// Ensure destination directory exists
-	destDir := filepath.Dir(u.otaBinary)
+	destDir := u.installDir()
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		report("failed", 0, err)
 		return fmt.Errorf("create ota bin dir: %w", err)
@@ -292,10 +294,10 @@ func (u *AgentUpdater) ApplyFromURL(ctx context.Context, target backend.AgentUpd
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
-	// 4. Verify ELF binary format and architecture compatibility
-	if err := verifyELF(stagedPath); err != nil {
+	// 4. Verify it's an executable for this host's OS and CPU
+	if err := verifyBinary(stagedPath); err != nil {
 		report("failed", 100, err)
-		return fmt.Errorf("verify elf binary: %w", err)
+		return fmt.Errorf("verify binary: %w", err)
 	}
 
 	// 5. Atomically install
@@ -305,7 +307,7 @@ func (u *AgentUpdater) ApplyFromURL(ctx context.Context, target backend.AgentUpd
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
-	if err := os.Rename(stagedPath, u.otaBinary); err != nil {
+	if err := u.install(stagedPath); err != nil {
 		report("failed", 100, err)
 		return fmt.Errorf("atomic install ota binary: %w", err)
 	}
@@ -339,7 +341,7 @@ func (u *AgentUpdater) ApplyFromFile(ctx context.Context, srcPath, expectedSHA25
 		u.mu.Unlock()
 	}()
 
-	destDir := filepath.Dir(u.otaBinary)
+	destDir := u.installDir()
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("create ota bin dir: %w", err)
 	}
@@ -370,15 +372,15 @@ func (u *AgentUpdater) ApplyFromFile(ctx context.Context, srcPath, expectedSHA25
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
-	if err := verifyELF(stagedPath); err != nil {
-		return fmt.Errorf("verify elf binary: %w", err)
+	if err := verifyBinary(stagedPath); err != nil {
+		return fmt.Errorf("verify binary: %w", err)
 	}
 
 	if err := os.Chmod(stagedPath, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
-	if err := os.Rename(stagedPath, u.otaBinary); err != nil {
+	if err := u.install(stagedPath); err != nil {
 		return fmt.Errorf("install ota binary: %w", err)
 	}
 
@@ -391,16 +393,11 @@ func (u *AgentUpdater) ApplyFromFile(ctx context.Context, srcPath, expectedSHA25
 	return nil
 }
 
-// Restart triggers agent restart. If running under systemd, systemd will restart it.
+// Restart exits so the service manager starts the new binary: systemd
+// (Restart=always), launchd (KeepAlive) and the Windows scheduled task's
+// wrapper loop all restart on exit, under whatever unit name install.sh
+// gave them -- restarting a named unit here only fits one of them.
 func (u *AgentUpdater) Restart() error {
-	// Try systemctl first if present
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		cmd := exec.Command("systemctl", "restart", "nodexa-agent.service")
-		if err := cmd.Start(); err == nil {
-			return nil
-		}
-	}
-	// Fall back to clean exit; systemd Restart=always will restart the process
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		os.Exit(0)
@@ -408,8 +405,9 @@ func (u *AgentUpdater) Restart() error {
 	return nil
 }
 
-// extractOrCopyBinary inspects srcPath: if it is a tar.gz archive, it extracts the
-// nodexa-agent binary. If it is already an ELF binary, it copies it directly.
+// extractOrCopyBinary writes the supervisor executable from srcPath to
+// destPath: srcPath is a release archive (.tar.gz, or .zip on Windows) or
+// the bare executable.
 func extractOrCopyBinary(srcPath, destPath string) error {
 	f, err := os.Open(srcPath)
 	if err != nil {
@@ -418,86 +416,133 @@ func extractOrCopyBinary(srcPath, destPath string) error {
 	defer f.Close()
 
 	header := make([]byte, 4)
-	n, _ := f.Read(header)
+	n, _ := io.ReadFull(f, header)
 	_, _ = f.Seek(0, io.SeekStart)
+	header = header[:n]
 
-	if n >= 2 && header[0] == 0x1f && header[1] == 0x8b {
-		// Gzip archive (.tar.gz)
+	switch {
+	case len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b:
 		gzReader, err := gzip.NewReader(f)
 		if err != nil {
 			return fmt.Errorf("open gzip reader: %w", err)
 		}
 		defer gzReader.Close()
-
 		tarReader := tar.NewReader(gzReader)
 		for {
 			hdr, err := tarReader.Next()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
-				if err == io.EOF {
-					break
-				}
 				return fmt.Errorf("read tar archive: %w", err)
 			}
-			base := filepath.Base(hdr.Name)
-			if (base == "nodexa-agent" || base == "nodexa-supervisor" || strings.HasPrefix(base, "nodexa-agent-") || strings.HasPrefix(base, "nodexa-supervisor-")) && !hdr.FileInfo().IsDir() {
-				out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-				if err != nil {
-					return err
-				}
-				if _, err := io.Copy(out, tarReader); err != nil {
-					_ = out.Close()
-					return err
-				}
-				return out.Close()
+			if !hdr.FileInfo().IsDir() && isSupervisorBinaryName(hdr.Name) {
+				return writeExecutable(destPath, tarReader)
 			}
 		}
-		return errors.New("tar archive did not contain nodexa-agent or nodexa-supervisor executable")
-	}
-
-	if n >= 4 && header[0] == 0x7f && header[1] == 'E' && header[2] == 'L' && header[3] == 'F' {
-		// Raw ELF binary
-		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		return errors.New("archive did not contain a nodex-supervisor executable")
+	case len(header) >= 4 && string(header) == "PK\x03\x04":
+		info, err := f.Stat()
 		if err != nil {
 			return err
 		}
-		defer out.Close()
-		_, err = io.Copy(out, f)
-		return err
+		zr, err := zip.NewReader(f, info.Size())
+		if err != nil {
+			return fmt.Errorf("open zip archive: %w", err)
+		}
+		for _, zf := range zr.File {
+			if zf.FileInfo().IsDir() || !isSupervisorBinaryName(zf.Name) {
+				continue
+			}
+			rc, err := zf.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+			return writeExecutable(destPath, rc)
+		}
+		return errors.New("archive did not contain a nodex-supervisor executable")
+	default:
+		// A bare executable; verifyBinary checks what it is.
+		return writeExecutable(destPath, f)
 	}
-
-	return errors.New("unrecognized file format: expected ELF binary or tar.gz archive")
 }
 
-// verifyELF verifies that the file is a valid executable ELF binary compatible
-// with the host architecture.
-func verifyELF(binaryPath string) error {
-	elffile, err := elf.Open(binaryPath)
+// isSupervisorBinaryName matches the executable in a release archive:
+// nodex-supervisor, or its nodexa-agent alias (".exe" on Windows).
+func isSupervisorBinaryName(name string) bool {
+	base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(name)), ".exe")
+	return base == "nodex-supervisor" || base == "nodexa-agent"
+}
+
+func writeExecutable(destPath string, r io.Reader) error {
+	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
-		return fmt.Errorf("invalid elf binary: %w", err)
+		return err
 	}
-	defer elffile.Close()
-
-	if elffile.Type != elf.ET_EXEC && elffile.Type != elf.ET_DYN {
-		return fmt.Errorf("elf file is not an executable (type=%s)", elffile.Type)
+	if _, err := io.Copy(out, r); err != nil {
+		_ = out.Close()
+		return err
 	}
+	return out.Close()
+}
 
-	// Architecture compatibility check
-	switch runtime.GOARCH {
-	case "arm":
-		if elffile.Machine != elf.EM_ARM {
-			return fmt.Errorf("architecture mismatch: device is arm, binary is %s", elffile.Machine)
-		}
-	case "arm64":
-		if elffile.Machine != elf.EM_AARCH64 {
-			return fmt.Errorf("architecture mismatch: device is arm64, binary is %s", elffile.Machine)
-		}
-	case "amd64":
-		if elffile.Machine != elf.EM_X86_64 {
-			return fmt.Errorf("architecture mismatch: device is amd64, binary is %s", elffile.Machine)
-		}
+// verifyBinary checks that the file is an executable for this host: ELF
+// on Linux, Mach-O on macOS, PE on Windows, built for this CPU. A build
+// for another OS fails here instead of being installed and never starting.
+func verifyBinary(path string) error {
+	want := runtime.GOOS + "/" + runtime.GOARCH
+	got, err := binaryPlatform(path)
+	if err != nil {
+		return err
 	}
-
+	if got != want {
+		return fmt.Errorf("platform mismatch: device is %s, binary is %s", want, got)
+	}
 	return nil
+}
+
+// binaryPlatform reports the GOOS/GOARCH an executable was built for.
+func binaryPlatform(path string) (string, error) {
+	if f, err := elf.Open(path); err == nil {
+		defer f.Close()
+		if f.Type != elf.ET_EXEC && f.Type != elf.ET_DYN {
+			return "", fmt.Errorf("elf file is not an executable (type=%s)", f.Type)
+		}
+		switch f.Machine {
+		case elf.EM_X86_64:
+			return "linux/amd64", nil
+		case elf.EM_AARCH64:
+			return "linux/arm64", nil
+		case elf.EM_ARM:
+			return "linux/arm", nil
+		}
+		return "", fmt.Errorf("unsupported elf machine %s", f.Machine)
+	}
+	if f, err := macho.Open(path); err == nil {
+		defer f.Close()
+		if f.Type != macho.TypeExec {
+			return "", fmt.Errorf("mach-o file is not an executable (type=%s)", f.Type)
+		}
+		switch f.Cpu {
+		case macho.CpuAmd64:
+			return "darwin/amd64", nil
+		case macho.CpuArm64:
+			return "darwin/arm64", nil
+		}
+		return "", fmt.Errorf("unsupported mach-o cpu %s", f.Cpu)
+	}
+	if f, err := pe.Open(path); err == nil {
+		defer f.Close()
+		switch f.Machine {
+		case pe.IMAGE_FILE_MACHINE_AMD64:
+			return "windows/amd64", nil
+		case pe.IMAGE_FILE_MACHINE_ARM64:
+			return "windows/arm64", nil
+		}
+		return "", fmt.Errorf("unsupported pe machine %#x", f.Machine)
+	}
+	return "", errors.New("not an executable (expected ELF, Mach-O or PE)")
 }
 
 // Provider is the general OTA interface for Nodexa Update.

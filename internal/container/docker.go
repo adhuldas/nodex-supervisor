@@ -180,39 +180,28 @@ func dockerList(ctx context.Context, cli, containerDir string) ([]NodexaContaine
 			continue
 		}
 		var entry struct {
-			ID     string `json:"ID"`
-			Names  string `json:"Names"`
-			Image  string `json:"Image"`
-			State  string `json:"State"`
-			Labels string `json:"Labels"`
+			ID        string `json:"ID"`
+			Names     string `json:"Names"`
+			Image     string `json:"Image"`
+			State     string `json:"State"`
+			Labels    string `json:"Labels"`
+			CreatedAt string `json:"CreatedAt"`
 		}
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
 
 		cleanName := strings.TrimPrefix(strings.Split(entry.Names, ",")[0], "/")
-		var st State
-		switch strings.ToLower(entry.State) {
-		case "running":
-			st = StateRunning
-		case "created":
-			st = StateCreated
-		case "exited", "stopped":
-			st = StateStopped
-		case "dead":
-			st = StateFailed
-		default:
-			st = State(entry.State)
-		}
-
 		c := NodexaContainer{
-			Name:  cleanName,
-			Image: entry.Image,
-			State: st,
+			Name:      cleanName,
+			Image:     entry.Image,
+			State:     dockerState(entry.State),
+			CreatedAt: parseDockerTime(entry.CreatedAt),
+			External:  !hasLabel(entry.Labels, "nodexa.managed=true"),
 		}
 
 		// Read disk metadata if available for deployment details
-		if containerDir != "" {
+		if containerDir != "" && !c.External {
 			if md, _ := readMetadata(filepath.Join(containerDir, cleanName)); md != nil {
 				c.DeploymentName = md.DeploymentName
 				c.DeploymentRevision = md.DeploymentRevision
@@ -224,6 +213,61 @@ func dockerList(ctx context.Context, cli, containerDir string) ([]NodexaContaine
 	}
 
 	return list, nil
+}
+
+// dockerIsExternal reports whether a container named name exists and
+// wasn't created by this supervisor (no nodexa.managed label).
+func dockerIsExternal(ctx context.Context, cli, name string) bool {
+	out, err := exec.CommandContext(ctx, cli, "inspect", "--type", "container",
+		"--format", `{{index .Config.Labels "nodexa.managed"}}`, name).Output()
+	if err != nil {
+		return false // no such container
+	}
+	return strings.TrimSpace(string(out)) != "true"
+}
+
+// dockerImageExists reports whether image is already on the host.
+func dockerImageExists(ctx context.Context, cli, image string) bool {
+	return exec.CommandContext(ctx, cli, "image", "inspect", image).Run() == nil
+}
+
+// dockerState maps Docker's container states onto the supervisor's own
+// vocabulary. nodexa-backend rejects the whole heartbeat over any state
+// outside it, so states only Docker has can't pass through as-is.
+func dockerState(s string) State {
+	switch strings.ToLower(s) {
+	case "running":
+		return StateRunning
+	case "created":
+		return StateCreated
+	case "dead", "restarting":
+		// restarting: crash-looping under a restart policy.
+		return StateFailed
+	default:
+		// exited, paused, removing.
+		return StateStopped
+	}
+}
+
+// parseDockerTime parses `docker ps`'s CreatedAt ("2026-10-03 09:28:01
+// +0000 UTC"); zero when it can't.
+func parseDockerTime(s string) time.Time {
+	t, err := time.Parse("2006-01-02 15:04:05 -0700 MST", s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
+// hasLabel reports whether `docker ps`'s comma-separated Labels contain
+// the exact key=value pair.
+func hasLabel(labels, pair string) bool {
+	for _, l := range strings.Split(labels, ",") {
+		if strings.TrimSpace(l) == pair {
+			return true
+		}
+	}
+	return false
 }
 
 // dockerInspect inspects a container and returns detailed NodexaContainer info.
@@ -455,24 +499,5 @@ func dockerRemoveImage(ctx context.Context, cli, name string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s rmi %s: %w: %s", cli, name, err, strings.TrimSpace(string(out)))
 	}
-	return nil
-}
-
-// dockerPruneImages prunes unused images using docker or nerdctl CLI.
-func dockerPruneImages(ctx context.Context, cli string, keepImages map[string]bool) error {
-	if len(keepImages) > 0 {
-		imgs, err := dockerImages(ctx, cli)
-		if err != nil {
-			return err
-		}
-		for _, img := range imgs {
-			if !keepImages[img.Name] {
-				_ = dockerRemoveImage(ctx, cli, img.Name)
-			}
-		}
-		return nil
-	}
-	cmd := exec.CommandContext(ctx, cli, "image", "prune", "-a", "-f")
-	_ = cmd.Run()
 	return nil
 }

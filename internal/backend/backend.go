@@ -114,6 +114,9 @@ type RegisterRequest struct {
 	Hostname            string  `json:"hostname,omitempty"`
 	FleetID             *string `json:"fleet_id,omitempty"`
 	DeviceType          *string `json:"device_type,omitempty"`
+	// Platform is the host OS (runtime.GOOS: linux, darwin, windows), so
+	// the cloud offers this host the right build when updating.
+	Platform string `json:"platform,omitempty"`
 }
 
 // RegisterResponse mirrors nodexa-backend's DeviceRegisterResponse.

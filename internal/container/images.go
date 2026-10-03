@@ -130,8 +130,8 @@ func dirSize(dir string) (int64, error) {
 // PruneUnusedImages removes all cached OCI layouts and metadata in imageCacheDir
 // whose image references are not in the keepImages set.
 func (m *NodexaContainerManager) PruneUnusedImages(keepImages map[string]bool) error {
-	if m.Engine() == EngineDocker || m.Engine() == EngineNerdctl {
-		return dockerPruneImages(context.Background(), m.Engine().cliBinary(), keepImages)
+	if eng := m.Engine(); eng == EngineDocker || eng == EngineNerdctl {
+		return m.prunePulledImages(eng.cliBinary(), keepImages)
 	}
 
 	entries, err := os.ReadDir(m.imageCacheDir)
@@ -154,4 +154,61 @@ func (m *NodexaContainerManager) PruneUnusedImages(keepImages map[string]bool) e
 		}
 	}
 	return nil
+}
+
+// pulledImagesFile records the Docker/nerdctl images pulled for
+// deployments: the host's other images belong to whoever else runs
+// containers on it, so pruning only ever considers these.
+func (m *NodexaContainerManager) pulledImagesFile() string {
+	return filepath.Join(m.imageCacheDir, "docker-pulled.json")
+}
+
+func (m *NodexaContainerManager) readPulledImages() []string {
+	var images []string
+	if data, err := os.ReadFile(m.pulledImagesFile()); err == nil {
+		_ = json.Unmarshal(data, &images)
+	}
+	return images
+}
+
+func (m *NodexaContainerManager) writePulledImages(images []string) error {
+	if err := os.MkdirAll(m.imageCacheDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(images)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.pulledImagesFile(), data, 0o644)
+}
+
+func (m *NodexaContainerManager) recordPulledImage(image string) {
+	m.pulledMu.Lock()
+	defer m.pulledMu.Unlock()
+	images := m.readPulledImages()
+	for _, img := range images {
+		if img == image {
+			return
+		}
+	}
+	_ = m.writePulledImages(append(images, image))
+}
+
+// prunePulledImages removes recorded images not in keepImages. `rmi`
+// without -f refuses an image any container still uses, so one shared
+// with a container outside the release stays; it's retried next prune.
+func (m *NodexaContainerManager) prunePulledImages(cli string, keepImages map[string]bool) error {
+	m.pulledMu.Lock()
+	defer m.pulledMu.Unlock()
+	var remaining []string
+	for _, img := range m.readPulledImages() {
+		if keepImages[img] {
+			remaining = append(remaining, img)
+			continue
+		}
+		if err := dockerRemoveImage(context.Background(), cli, img); err != nil {
+			remaining = append(remaining, img)
+		}
+	}
+	return m.writePulledImages(remaining)
 }

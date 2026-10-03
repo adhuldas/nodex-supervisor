@@ -43,6 +43,10 @@ type NodexaContainer struct {
 	// are empty/zero for seeded or manually started containers.
 	DeploymentName     string `json:"deployment_name,omitempty"`
 	DeploymentRevision int    `json:"deployment_revision,omitempty"`
+	// External marks a Docker/nerdctl container this supervisor didn't
+	// create (no nodexa.managed label): reported and viewable, but never
+	// stopped, removed or pruned by a deployment.
+	External           bool            `json:"external,omitempty"`
 	Network            string          `json:"network,omitempty"`
 	IPAddress          string          `json:"ip_address,omitempty"`
 	Ports              []ContainerPort `json:"ports,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/backend"
@@ -20,7 +21,14 @@ import (
 )
 
 // buildTestELF creates a tiny valid Linux ELF binary for testing
+// buildTestELF builds a trivial executable for the host running the test,
+// which is what an update must be to pass verifyBinary.
 func buildTestELF(t *testing.T, outPath string) {
+	t.Helper()
+	buildTestBinary(t, outPath, runtime.GOOS, runtime.GOARCH)
+}
+
+func buildTestBinary(t *testing.T, outPath, goos, goarch string) {
 	t.Helper()
 	srcDir := t.TempDir()
 	mainGo := filepath.Join(srcDir, "main.go")
@@ -29,16 +37,46 @@ func buildTestELF(t *testing.T, outPath string) {
 		t.Fatalf("write main.go: %v", err)
 	}
 
-	targetArch := runtime.GOARCH
-	if targetArch != "arm64" && targetArch != "amd64" && targetArch != "arm" {
-		targetArch = "arm64"
-	}
-
 	cmd := exec.Command("go", "build", "-o", outPath, mainGo)
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+targetArch)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("build test elf (%s): %v\n%s", targetArch, err, string(out))
+		t.Fatalf("build test binary (%s/%s): %v\n%s", goos, goarch, err, string(out))
+	}
+}
+
+// Every release target is recognised, so a host is never offered a build
+// for another OS (same CPU) that installs and then never starts.
+func TestBinaryPlatformRecognisesEveryReleaseTarget(t *testing.T) {
+	for _, target := range []string{"linux/amd64", "linux/arm64", "linux/arm", "darwin/amd64", "darwin/arm64", "windows/amd64", "windows/arm64"} {
+		goos, goarch, _ := strings.Cut(target, "/")
+		bin := filepath.Join(t.TempDir(), "nodex-supervisor")
+		buildTestBinary(t, bin, goos, goarch)
+		got, err := binaryPlatform(bin)
+		if err != nil || got != target {
+			t.Errorf("binaryPlatform(%s build) = %q, %v", target, got, err)
+		}
+	}
+
+	other := "windows"
+	if runtime.GOOS == "windows" {
+		other = "linux"
+	}
+	bin := filepath.Join(t.TempDir(), "nodex-supervisor")
+	buildTestBinary(t, bin, other, runtime.GOARCH)
+	if err := verifyBinary(bin); err == nil || !strings.Contains(err.Error(), "platform mismatch") {
+		t.Errorf("verifyBinary accepted a %s/%s build on %s/%s: %v", other, runtime.GOARCH, runtime.GOOS, runtime.GOARCH, err)
+	}
+}
+
+func TestSupervisorBinaryNames(t *testing.T) {
+	for name, want := range map[string]bool{
+		"./nodex-supervisor": true, "nodex-supervisor.exe": true, "nodexa-agent": true,
+		"nodexa-agent.exe": true, "checksums.txt": false, "nodex-supervisor.previous": false,
+	} {
+		if got := isSupervisorBinaryName(name); got != want {
+			t.Errorf("isSupervisorBinaryName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
