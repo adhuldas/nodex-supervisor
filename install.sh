@@ -294,6 +294,14 @@ check_tailscale_prerequisite() {
         local ts_ver
         ts_ver="$(tailscale version 2>/dev/null | head -n 1 || echo "ready")"
         echo "  [✓] Tailscale is installed (${ts_ver})."
+        # Remote terminal and logs need the daemon running, now and after reboots.
+        if [ "${OS}" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
+            if [ "$(id -u)" -eq 0 ]; then
+                systemctl enable --now tailscaled >/dev/null 2>&1 || true
+            else
+                sudo systemctl enable --now tailscaled >/dev/null 2>&1 || true
+            fi
+        fi
         return 0
     fi
 

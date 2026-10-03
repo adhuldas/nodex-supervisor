@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -85,6 +86,12 @@ func (p TailscaleProvider) Connect(ctx context.Context) error {
 	)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// On a third-party host tailscaled is the host's own service and
+		// may be stopped or not enabled at boot; start it so the next
+		// retry (connectVPN's backoff) can connect.
+		if strings.Contains(stderr.String(), "tailscaled") && startTailscaled(ctx) == nil {
+			return fmt.Errorf("vpn: tailscaled was not running, started it: %s", strings.TrimSpace(stderr.String()))
+		}
 		return fmt.Errorf("vpn: tailscale up: %w: %s", err, stderr.String())
 	}
 
@@ -137,4 +144,17 @@ func (p TailscaleProvider) Disconnect(ctx context.Context) error {
 func (p TailscaleProvider) Status() Status {
 	err := exec.Command(tailscaleBinPath(), "status").Run()
 	return Status{Connected: err == nil}
+}
+
+// startTailscaled starts the tailscaled daemon through the host's service
+// manager, enabling it at boot too. Only Linux with systemd: elsewhere it
+// returns an error and the caller reports the original failure.
+func startTailscaled(ctx context.Context) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("vpn: starting tailscaled not supported on %s", runtime.GOOS)
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return err
+	}
+	return exec.CommandContext(ctx, "systemctl", "enable", "--now", "tailscaled").Run()
 }
