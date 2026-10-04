@@ -285,29 +285,31 @@ func (u *AgentUpdater) ApplyFromURL(ctx context.Context, target backend.AgentUpd
 		}
 	}
 
-	// 3. Extract or extract binary
-	stagedPath := filepath.Join(destDir, fmt.Sprintf(".nodexa-agent-staged-%d.tmp", time.Now().UnixNano()))
-	defer os.Remove(stagedPath)
+	// 3. Extract supervisor and CLI binaries
+	stagedSupervisor := filepath.Join(destDir, fmt.Sprintf(".nodexa-agent-staged-%d.tmp", time.Now().UnixNano()))
+	defer os.Remove(stagedSupervisor)
+	stagedCtl := filepath.Join(destDir, fmt.Sprintf(".nodexactl-staged-%d.tmp", time.Now().UnixNano()))
+	defer os.Remove(stagedCtl)
 
-	if err := extractOrCopyBinary(tmpDownloadPath, stagedPath); err != nil {
+	if err := extractFromArchiveOrFile(tmpDownloadPath, stagedSupervisor, stagedCtl); err != nil {
 		report("failed", 100, err)
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
-	// 4. Verify it's an executable for this host's OS and CPU
-	if err := verifyBinary(stagedPath); err != nil {
+	// 4. Verify supervisor is an executable for this host's OS and CPU
+	if err := verifyBinary(stagedSupervisor); err != nil {
 		report("failed", 100, err)
 		return fmt.Errorf("verify binary: %w", err)
 	}
 
 	// 5. Atomically install
 	report("installing", 100, nil)
-	if err := os.Chmod(stagedPath, 0755); err != nil {
+	if err := os.Chmod(stagedSupervisor, 0755); err != nil {
 		report("failed", 100, err)
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
-	if err := u.install(stagedPath); err != nil {
+	if err := u.install(stagedSupervisor); err != nil {
 		report("failed", 100, err)
 		return fmt.Errorf("atomic install ota binary: %w", err)
 	}
@@ -315,6 +317,14 @@ func (u *AgentUpdater) ApplyFromURL(ctx context.Context, target backend.AgentUpd
 	// Reset boot attempt counter
 	attemptFile := filepath.Join(u.bootAttemptDir, "ota-boot-attempt")
 	_ = os.Remove(attemptFile)
+
+	// Install nodexactl and set up nodex / nodexa aliases if present in release
+	if fi, err := os.Stat(stagedCtl); err == nil && fi.Size() > 0 {
+		if err := verifyBinary(stagedCtl); err == nil {
+			_ = os.Chmod(stagedCtl, 0755)
+			_ = u.installCtl(stagedCtl)
+		}
+	}
 
 	report("completed", 100, nil)
 
@@ -365,27 +375,37 @@ func (u *AgentUpdater) ApplyFromFile(ctx context.Context, srcPath, expectedSHA25
 		}
 	}
 
-	stagedPath := filepath.Join(destDir, fmt.Sprintf(".nodexa-agent-staged-%d.tmp", time.Now().UnixNano()))
-	defer os.Remove(stagedPath)
+	stagedSupervisor := filepath.Join(destDir, fmt.Sprintf(".nodexa-agent-staged-%d.tmp", time.Now().UnixNano()))
+	defer os.Remove(stagedSupervisor)
+	stagedCtl := filepath.Join(destDir, fmt.Sprintf(".nodexactl-staged-%d.tmp", time.Now().UnixNano()))
+	defer os.Remove(stagedCtl)
 
-	if err := extractOrCopyBinary(srcPath, stagedPath); err != nil {
+	if err := extractFromArchiveOrFile(srcPath, stagedSupervisor, stagedCtl); err != nil {
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
-	if err := verifyBinary(stagedPath); err != nil {
+	if err := verifyBinary(stagedSupervisor); err != nil {
 		return fmt.Errorf("verify binary: %w", err)
 	}
 
-	if err := os.Chmod(stagedPath, 0755); err != nil {
+	if err := os.Chmod(stagedSupervisor, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
 	}
 
-	if err := u.install(stagedPath); err != nil {
+	if err := u.install(stagedSupervisor); err != nil {
 		return fmt.Errorf("install ota binary: %w", err)
 	}
 
 	attemptFile := filepath.Join(u.bootAttemptDir, "ota-boot-attempt")
 	_ = os.Remove(attemptFile)
+
+	// Install nodexactl and set up nodex / nodexa aliases if present in release
+	if fi, err := os.Stat(stagedCtl); err == nil && fi.Size() > 0 {
+		if err := verifyBinary(stagedCtl); err == nil {
+			_ = os.Chmod(stagedCtl, 0755)
+			_ = u.installCtl(stagedCtl)
+		}
+	}
 
 	if u.bus != nil {
 		u.bus.Emit(events.UpdateReady, "nodexa-agent update installed from file", events.Fieldsf("version", "%s", targetVersion))
@@ -409,6 +429,12 @@ func (u *AgentUpdater) Restart() error {
 // destPath: srcPath is a release archive (.tar.gz, or .zip on Windows) or
 // the bare executable.
 func extractOrCopyBinary(srcPath, destPath string) error {
+	return extractFromArchiveOrFile(srcPath, destPath, "")
+}
+
+// extractFromArchiveOrFile writes the supervisor executable to destSupervisor,
+// and if destCtl is specified and nodexactl is present in the archive, writes it to destCtl.
+func extractFromArchiveOrFile(srcPath, destSupervisor, destCtl string) error {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -428,6 +454,7 @@ func extractOrCopyBinary(srcPath, destPath string) error {
 		}
 		defer gzReader.Close()
 		tarReader := tar.NewReader(gzReader)
+		foundSupervisor := false
 		for {
 			hdr, err := tarReader.Next()
 			if err == io.EOF {
@@ -436,9 +463,19 @@ func extractOrCopyBinary(srcPath, destPath string) error {
 			if err != nil {
 				return fmt.Errorf("read tar archive: %w", err)
 			}
-			if !hdr.FileInfo().IsDir() && isSupervisorBinaryName(hdr.Name) {
-				return writeExecutable(destPath, tarReader)
+			if !hdr.FileInfo().IsDir() {
+				if isSupervisorBinaryName(hdr.Name) {
+					if err := writeExecutable(destSupervisor, tarReader); err != nil {
+						return err
+					}
+					foundSupervisor = true
+				} else if destCtl != "" && isCtlBinaryName(hdr.Name) {
+					_ = writeExecutable(destCtl, tarReader)
+				}
 			}
+		}
+		if foundSupervisor {
+			return nil
 		}
 		return errors.New("archive did not contain a nodex-supervisor executable")
 	case len(header) >= 4 && string(header) == "PK\x03\x04":
@@ -450,21 +487,37 @@ func extractOrCopyBinary(srcPath, destPath string) error {
 		if err != nil {
 			return fmt.Errorf("open zip archive: %w", err)
 		}
+		foundSupervisor := false
 		for _, zf := range zr.File {
-			if zf.FileInfo().IsDir() || !isSupervisorBinaryName(zf.Name) {
+			if zf.FileInfo().IsDir() {
 				continue
 			}
-			rc, err := zf.Open()
-			if err != nil {
-				return err
+			if isSupervisorBinaryName(zf.Name) {
+				rc, err := zf.Open()
+				if err != nil {
+					return err
+				}
+				err = writeExecutable(destSupervisor, rc)
+				rc.Close()
+				if err != nil {
+					return err
+				}
+				foundSupervisor = true
+			} else if destCtl != "" && isCtlBinaryName(zf.Name) {
+				rc, err := zf.Open()
+				if err == nil {
+					_ = writeExecutable(destCtl, rc)
+					rc.Close()
+				}
 			}
-			defer rc.Close()
-			return writeExecutable(destPath, rc)
+		}
+		if foundSupervisor {
+			return nil
 		}
 		return errors.New("archive did not contain a nodex-supervisor executable")
 	default:
 		// A bare executable; verifyBinary checks what it is.
-		return writeExecutable(destPath, f)
+		return writeExecutable(destSupervisor, f)
 	}
 }
 
@@ -473,6 +526,12 @@ func extractOrCopyBinary(srcPath, destPath string) error {
 func isSupervisorBinaryName(name string) bool {
 	base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(name)), ".exe")
 	return base == "nodex-supervisor" || base == "nodexa-agent"
+}
+
+// isCtlBinaryName matches the CLI executable in a release archive.
+func isCtlBinaryName(name string) bool {
+	base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(name)), ".exe")
+	return base == "nodexactl"
 }
 
 func writeExecutable(destPath string, r io.Reader) error {

@@ -77,6 +77,21 @@ for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}" "$
     fi
 done
 
+if [ "${INSTALL_DIR}" != "/usr/bin" ] && [ -d "/usr/bin" ]; then
+    for b in "${BIN_NAME}" "${ALIAS_NAME}" "nodexactl" "nodexa" "nodex"; do
+        if [ -L "/usr/bin/${b}" ]; then
+            t="$(readlink "/usr/bin/${b}" 2>/dev/null || true)"
+            if echo "${t}" | grep -q "${INSTALL_DIR}"; then
+                if [ -w "/usr/bin" ]; then
+                    rm -f "/usr/bin/${b}"
+                else
+                    sudo rm -f "/usr/bin/${b}" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done
+fi
+
 if [ -f "/etc/nodexa/config.json" ]; then
     if [ -w "/etc/nodexa" ]; then
         rm -f "/etc/nodexa/config.json"

@@ -177,7 +177,7 @@ if ($Uninstall) {
     }
     Remove-SupervisorTask -TargetDir $InstallDir
 
-    foreach ($bin in @($BinName, $AliasName)) {
+    foreach ($bin in @($BinName, $AliasName, "nodexactl.exe", "nodex.exe", "nodexa.exe")) {
         $binPath = Join-Path $InstallDir $bin
         if (Test-Path $binPath) {
             Remove-Item -Path $binPath -Force
@@ -398,6 +398,10 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
     $env:CGO_ENABLED = "0"
     & go build -trimpath -ldflags $ldflags -o $BinName ./cmd/nodexa-agent
 
+    if (Test-Path "./cmd/nodexactl/main.go") {
+        & go build -trimpath -ldflags "-s -w" -o "nodexactl.exe" ./cmd/nodexactl
+    }
+
     if (Test-Path $BinName) {
         if (-not (Test-Path $InstallDir)) {
             New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -408,6 +412,14 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
 
         $aliasTarget = Join-Path $InstallDir $AliasName
         Copy-Item -Path $target -Destination $aliasTarget -Force
+
+        if (Test-Path "nodexactl.exe") {
+            $ctlTarget = Join-Path $InstallDir "nodexactl.exe"
+            Move-Item -Path "nodexactl.exe" -Destination $ctlTarget -Force
+            Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodex.exe") -Force
+            Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodexa.exe") -Force
+            Write-Host "==> Successfully installed CLI to $ctlTarget (aliases: nodex.exe, nodexa.exe)"
+        }
 
         Add-ToUserPath $InstallDir
         Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
@@ -451,6 +463,17 @@ if (-not $release -or -not $release.tag_name) {
             Copy-Item -Path $gopathBin -Destination $target -Force
             $aliasTarget = Join-Path $InstallDir $AliasName
             Copy-Item -Path $gopathBin -Destination $aliasTarget -Force
+
+            go install "github.com/${Repo}/cmd/nodexactl@latest"
+            $gopathCtl = Join-Path $gopath "bin\nodexactl.exe"
+            if (Test-Path $gopathCtl) {
+                $ctlTarget = Join-Path $InstallDir "nodexactl.exe"
+                Copy-Item -Path $gopathCtl -Destination $ctlTarget -Force
+                Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodex.exe") -Force
+                Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodexa.exe") -Force
+                Write-Host "==> Successfully installed CLI to $ctlTarget (aliases: nodex.exe, nodexa.exe)"
+            }
+
             Add-ToUserPath $InstallDir
             Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir
             Install-SupervisorTask -TargetDir $InstallDir
@@ -516,6 +539,11 @@ try {
         throw "Could not find $BinName or $AliasName in the downloaded release archive."
     }
 
+    $extractedCtl = Get-ChildItem -Path $tempDir -Filter "nodexactl.exe" -Recurse | Select-Object -First 1
+    if (-not $extractedCtl) {
+        $extractedCtl = Get-ChildItem -Path $tempDir -Filter "nodexactl" -Recurse | Select-Object -First 1
+    }
+
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
@@ -526,6 +554,14 @@ try {
 
     $aliasTarget = Join-Path $InstallDir $AliasName
     Copy-Item -Path $target -Destination $aliasTarget -Force
+
+    if ($extractedCtl) {
+        $ctlTarget = Join-Path $InstallDir "nodexactl.exe"
+        Copy-Item -Path $extractedCtl.FullName -Destination $ctlTarget -Force
+        Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodex.exe") -Force
+        Copy-Item -Path $ctlTarget -Destination (Join-Path $InstallDir "nodexa.exe") -Force
+        Write-Host "==> Successfully installed CLI to $ctlTarget (aliases: nodex.exe, nodexa.exe)"
+    }
 
     Add-ToUserPath $InstallDir
     Configure-Fleet -TargetFleetId $FleetId -TargetDir $InstallDir

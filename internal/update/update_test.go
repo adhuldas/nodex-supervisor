@@ -239,3 +239,100 @@ func TestAgentUpdaterApplyFromURLChecksumMismatch(t *testing.T) {
 		t.Fatal("expected ota binary not to be created on error")
 	}
 }
+
+func TestAgentUpdaterExtractsAndInstallsCtl(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "src-bins")
+	_ = os.MkdirAll(binDir, 0755)
+
+	agentBin := filepath.Join(binDir, "nodex-supervisor")
+	buildTestELF(t, agentBin)
+	agentBytes, err := os.ReadFile(agentBin)
+	if err != nil {
+		t.Fatalf("read agent binary: %v", err)
+	}
+
+	ctlBin := filepath.Join(binDir, "nodexactl")
+	buildTestELF(t, ctlBin)
+	ctlBytes, err := os.ReadFile(ctlBin)
+	if err != nil {
+		t.Fatalf("read ctl binary: %v", err)
+	}
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	// Add nodex-supervisor
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "nodex-supervisor",
+		Mode: 0755,
+		Size: int64(len(agentBytes)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(agentBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add nodexactl
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "nodexactl",
+		Mode: 0755,
+		Size: int64(len(ctlBytes)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(ctlBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = tw.Close()
+	_ = gw.Close()
+	tarBytes := buf.Bytes()
+
+	hasher := sha256.New()
+	hasher.Write(tarBytes)
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(tarBytes)
+	}))
+	defer srv.Close()
+
+	baseBin := filepath.Join(tmpDir, "base-agent")
+	otaDir := filepath.Join(tmpDir, "ota-bin")
+	otaBin := filepath.Join(otaDir, "nodexa-agent")
+
+	updater := NewAgentUpdater(baseBin, otaBin, tmpDir, events.NewBus(10))
+	err = updater.ApplyFromURL(context.Background(), backend.AgentUpdateTarget{
+		Version: "0.4.5",
+		URL:     srv.URL,
+		SHA256:  checksum,
+	}, nil)
+
+	if err != nil {
+		t.Fatalf("ApplyFromURL error: %v", err)
+	}
+
+	// Verify nodexa-agent was installed
+	if _, err := os.Stat(otaBin); err != nil {
+		t.Fatalf("expected otaBin to exist: %v", err)
+	}
+
+	// Verify nodexactl was installed beside it
+	installedCtl := filepath.Join(otaDir, "nodexactl")
+	if _, err := os.Stat(installedCtl); err != nil {
+		t.Fatalf("expected installedCtl %s to exist: %v", installedCtl, err)
+	}
+
+	// Verify nodex and nodexa symlinks exist
+	for _, alias := range []string{"nodex", "nodexa"} {
+		aliasPath := filepath.Join(otaDir, alias)
+		if _, err := os.Lstat(aliasPath); err != nil {
+			t.Fatalf("expected alias %s to exist: %v", aliasPath, err)
+		}
+	}
+}
+

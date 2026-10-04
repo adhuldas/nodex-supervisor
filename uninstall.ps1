@@ -59,7 +59,7 @@ foreach ($file in @("run-supervisor.ps1", "nodex-supervisor.log", "nodex-supervi
     }
 }
 
-foreach ($bin in @($BinName, $AliasName)) {
+foreach ($bin in @($BinName, $AliasName, "nodexactl.exe", "nodex.exe", "nodexa.exe")) {
     $binPath = Join-Path $InstallDir $bin
     if (Test-Path $binPath) {
         Remove-Item -Path $binPath -Force

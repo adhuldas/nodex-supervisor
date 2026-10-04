@@ -219,6 +219,21 @@ if [ "${DO_UNINSTALL}" = "1" ]; then
         fi
     done
 
+    if [ "${INSTALL_DIR}" != "/usr/bin" ] && [ -d "/usr/bin" ]; then
+        for b in "${BIN_NAME}" "${ALIAS_NAME}" "nodexactl" "nodexa" "nodex"; do
+            if [ -L "/usr/bin/${b}" ]; then
+                t="$(readlink "/usr/bin/${b}" 2>/dev/null || true)"
+                if echo "${t}" | grep -q "${INSTALL_DIR}"; then
+                    if [ -w "/usr/bin" ]; then
+                        rm -f "/usr/bin/${b}"
+                    else
+                        sudo rm -f "/usr/bin/${b}" 2>/dev/null || true
+                    fi
+                fi
+            fi
+        done
+    fi
+
     if [ -f "/etc/nodexa/config.json" ]; then
         if [ -w "/etc/nodexa" ]; then
             rm -f "/etc/nodexa/config.json"
@@ -406,6 +421,17 @@ run_install() {
         sudo chmod 0755 "${dest}"
         sudo ln -sf "${dest}" "${INSTALL_DIR}/${ALIAS_NAME}"
     fi
+
+    # Also link to /usr/bin if INSTALL_DIR is not /usr/bin
+    if [ "${INSTALL_DIR}" != "/usr/bin" ] && [ -d "/usr/bin" ]; then
+        if [ -w "/usr/bin" ]; then
+            ln -sf "${dest}" "/usr/bin/${BIN_NAME}" 2>/dev/null || true
+            ln -sf "${dest}" "/usr/bin/${ALIAS_NAME}" 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo ln -sf "${dest}" "/usr/bin/${BIN_NAME}" 2>/dev/null || true
+            sudo ln -sf "${dest}" "/usr/bin/${ALIAS_NAME}" 2>/dev/null || true
+        fi
+    fi
 }
 
 # Installs the local CLI as nodexactl (same name as on Nodexa OS) with
@@ -438,14 +464,39 @@ install_cli() {
     else
         echo "  [!] ${INSTALL_DIR}/nodex is another program (the Nodex cloud CLI?); left as is. Use nodexa instead."
     fi
+
+    # Also link into /usr/bin if INSTALL_DIR is /usr/local/bin, ensuring nodex works
+    # even when /usr/local/bin is missing from root's PATH (e.g. Yocto / minimal Linux)
+    if [ "${INSTALL_DIR}" != "/usr/bin" ] && [ -d "/usr/bin" ]; then
+        if [ -w "/usr/bin" ]; then
+            ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodexactl" 2>/dev/null || true
+            ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodexa" 2>/dev/null || true
+            if [ ! -e "/usr/bin/nodex" ] || [ -L "/usr/bin/nodex" ]; then
+                ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodex" 2>/dev/null || true
+            fi
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodexactl" 2>/dev/null || true
+            sudo ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodexa" 2>/dev/null || true
+            if [ ! -e "/usr/bin/nodex" ] || [ -L "/usr/bin/nodex" ]; then
+                sudo ln -sf "${INSTALL_DIR}/nodexactl" "/usr/bin/nodex" 2>/dev/null || true
+            fi
+        fi
+    fi
+
     echo "==> Installed CLI ${INSTALL_DIR}/nodexactl (aliases: ${aliases}). Try: sudo ${try} ps"
 }
 
-# True when INSTALL_DIR/nodex is absent or already our alias.
+# True when INSTALL_DIR/nodex is absent, is a broken symlink, or already points to nodexactl.
 nodex_alias_free() {
     local link="${INSTALL_DIR}/nodex"
     [ ! -e "${link}" ] && [ ! -L "${link}" ] && return 0
-    [ -L "${link}" ] && [ "$(readlink "${link}")" = "${INSTALL_DIR}/nodexactl" ]
+    if [ -L "${link}" ]; then
+        local target="$(readlink "${link}" 2>/dev/null || true)"
+        if [ ! -e "${link}" ] || [ "${target}" = "${INSTALL_DIR}/nodexactl" ] || [ "${target}" = "nodexactl" ]; then
+            return 0
+        fi
+    fi
+    return 1
 }
 
 configure_fleet() {
@@ -592,6 +643,16 @@ fi
 
 TARGET="${INSTALL_DIR}/${BIN_NAME}"
 run_install "${EXTRACTED_BIN}" "${TARGET}"
+
+if [ ! -f "${TMP_DIR}/nodexactl" ] && command -v go >/dev/null 2>&1; then
+    echo "  Release archive did not contain nodexactl; building locally with go..."
+    (go install "github.com/${REPO}/cmd/nodexactl@latest" 2>/dev/null || true)
+    GOPATH_CTL="$(go env GOPATH 2>/dev/null)/bin/nodexactl"
+    if [ -f "${GOPATH_CTL}" ]; then
+        cp -f "${GOPATH_CTL}" "${TMP_DIR}/nodexactl"
+    fi
+fi
+
 install_cli "${TMP_DIR}/nodexactl"
 
 configure_fleet
