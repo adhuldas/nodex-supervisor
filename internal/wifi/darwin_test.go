@@ -10,8 +10,11 @@ func TestDarwinParsers(t *testing.T) {
 	if !linkActive("en0: flags=8863<UP>\n\tinet 192.168.31.110 netmask 0xffffff00\n\tstatus: active\n") {
 		t.Error("active link missed")
 	}
-	if linkActive("en0: flags=8863<UP>\n\tstatus: inactive\n") || linkActive("\tinet6 fe80::1\n\tstatus: active\n") {
-		t.Error("inactive or IPv6-only link counted")
+	if linkActive("en0: flags=8863<UP>\n\tstatus: inactive\n") {
+		t.Error("inactive link counted")
+	}
+	if !linkActive("en0: flags=8863<UP>\n\tinet6 fe80::1\n\tstatus: active\n") {
+		t.Error("active IPv6-only link missed")
 	}
 	if got := parseAirportNetwork("Current Wi-Fi Network: Home Net\n"); got != "Home Net" {
 		t.Errorf("airport network = %q", got)

@@ -3,7 +3,6 @@ package wifi
 import (
 	"context"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -52,12 +51,17 @@ func isWiredPort(p darwinPort) bool {
 	return strings.Contains(n, "ethernet") || strings.Contains(n, "lan")
 }
 
-var inetLine = regexp.MustCompile(`(?m)^\s+inet \d`)
-
-// linkActive reports whether `ifconfig <dev>` output shows an active link
-// with an IPv4 address.
+// linkActive reports whether `ifconfig <dev>` says the interface has an
+// active link. Requiring an IPv4 address here incorrectly hides connected
+// Wi-Fi on networks that provide only IPv6 (or while DHCP is still pending).
 func linkActive(ifconfig string) bool {
-	return strings.Contains(ifconfig, "status: active") && inetLine.MatchString(ifconfig)
+	for _, line := range strings.Split(ifconfig, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "status") && strings.EqualFold(strings.TrimSpace(val), "active") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseAirportNetwork parses `networksetup -getairportnetwork`: "Current
