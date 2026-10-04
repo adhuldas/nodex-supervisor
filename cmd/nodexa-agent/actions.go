@@ -45,6 +45,7 @@ type actionRunner struct {
 	volumesDir string
 	bus        *events.Bus
 	onDone     func()
+	usage      *engineUsageCollector
 
 	mu      sync.Mutex
 	lastID  string
@@ -145,12 +146,30 @@ func (r *actionRunner) dispatch(ctx context.Context, token string, target backen
 			r.bus.Emit(events.NetworkReady, "wifi network changed via cloud action", events.Fieldsf("ssid", "%s", creds.SSID))
 		}
 		return nil
+	case "prune_dangling_images":
+		freed, err := r.containers.PruneDanglingImages(ctx)
+		log.Printf("pruned dangling images, freed %d bytes", freed)
+		r.refreshUsage()
+		return err
+	case "clear_container_logs":
+		freed, err := r.containers.ClearLogs(ctx, target.Container)
+		log.Printf("cleared container logs, freed %d bytes", freed)
+		r.refreshUsage()
+		return err
 	case "create_swap", "update_swap", "resize_swap":
 		return swap.Create(ctx, target.SwapSizeMB)
 	case "delete_swap", "remove_swap":
 		return swap.Delete(ctx)
 	default:
 		return fmt.Errorf("unsupported action %q", target.Action)
+	}
+}
+
+// refreshUsage re-measures right after space was reclaimed, so the next
+// heartbeat shows it.
+func (r *actionRunner) refreshUsage() {
+	if r.usage != nil {
+		r.usage.Refresh()
 	}
 }
 

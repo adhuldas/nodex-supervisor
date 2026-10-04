@@ -248,7 +248,9 @@ func main() {
 
 	// --- dashboard-requested device actions (identify, reboot, ...) ---
 	transfers := &fleetTransfers{client: backendClient, deviceID: deviceIdentity.DeviceID, store: stateStore, provisioned: provisioningData.FleetID, deployMgr: deployMgr}
-	actions := &actionRunner{client: backendClient, deviceID: deviceIdentity.DeviceID, containers: containerMgr, volumesDir: cfg.DataDir + "/volumes", bus: bus}
+	engineUsage := newEngineUsageCollector(containerMgr)
+	go engineUsage.Run(ctx)
+	actions := &actionRunner{client: backendClient, deviceID: deviceIdentity.DeviceID, containers: containerMgr, volumesDir: cfg.DataDir + "/volumes", bus: bus, usage: engineUsage}
 	cloudURLs := &cloudURLChanges{
 		client: backendClient, identity: deviceIdentity, store: stateStore, provisioned: provisioningData.CloudURL,
 		fleetID: func() *string { return resolveFleetID(stateStore, provisioningData.FleetID) },
@@ -368,7 +370,7 @@ func main() {
 					conns, wifiSSID := wifi.DetectConnections(probeCtx)
 					cancelProbe()
 					storageReport := storageScanner.Latest()
-					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, storageReport, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
+					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, storageReport, engineUsage.Latest(), vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
 					if resp != nil {
 						if resp.FleetTransfer != nil {
 							transfers.handle(ctx, token, *resp.FleetTransfer)
@@ -698,7 +700,7 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 // fatal -- heartbeats are best-effort, same as registration itself.
 // Returns nil on failure, or the response the caller uses to detect a
 // deployment revision change or pinned agent/OS update.
-func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, storageReport *storage.Breakdown, tailscaleIP string, location *backend.Location, isWifi bool, isGSM bool, conns []string, wifiSSID string, wifiNets []wifi.WifiNetwork, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
+func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, storageReport *storage.Breakdown, engineUsage *container.EngineUsage, tailscaleIP string, location *backend.Location, isWifi bool, isGSM bool, conns []string, wifiSSID string, wifiNets []wifi.WifiNetwork, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
 	var ip *string
 	if tailscaleIP != "" {
 		ip = &tailscaleIP
@@ -747,6 +749,7 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		SwapTotalBytes:    report.SwapTotalBytes,
 		SwapUsedBytes:     report.SwapUsedBytes,
 		StorageBreakdown:  storageReport,
+		EngineUsage:       engineUsage,
 		CPUCores:          runtime.NumCPU(),
 		GPUName:           report.GPUName,
 		GPUCores:          report.GPUCores,

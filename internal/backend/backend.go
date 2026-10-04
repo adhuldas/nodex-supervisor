@@ -154,6 +154,11 @@ type HeartbeatRequest struct {
 	// a new scan finished (see internal/storage); omitted otherwise, which
 	// leaves the stored one as it was.
 	StorageBreakdown *storage.Breakdown `json:"storage_breakdown,omitempty"`
+	// EngineUsage is what the container engine (docker, nerdctl or the
+	// supervisor's runc runtime) holds: volumes, running and dangling
+	// images, and logs, each with its size. Omitted until the first
+	// measurement finishes.
+	EngineUsage *container.EngineUsage `json:"engine_usage,omitempty"`
 	// GPU model, core count (Apple Silicon) and usage; omitted when the
 	// host has none or can't tell.
 	GPUName    string   `json:"gpu_name,omitempty"`

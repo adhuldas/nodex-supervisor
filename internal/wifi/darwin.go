@@ -2,6 +2,7 @@ package wifi
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -127,6 +128,11 @@ func darwinConnections(ctx context.Context) (hasWifi, hasEth bool, ssid string) 
 			}
 			if ssid == "" {
 				ssid = parseSummarySSID(darwinRun(ctx, "ipconfig", "getsummary", p.Device))
+			}
+			// wdutil needs root; as a daemon it can read the SSID macOS
+			// redacts from unprivileged callers.
+			if ssid == "" && os.Geteuid() == 0 {
+				ssid = parseSummarySSID(darwinRun(ctx, "wdutil", "info"))
 			}
 		case isWiredPort(p):
 			if linkActive(darwinRun(ctx, "ifconfig", p.Device)) {
