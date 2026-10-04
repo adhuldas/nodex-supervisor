@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/container"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/storage"
 )
 
 // defaultTimeout bounds every request this client makes. A slow or
@@ -149,6 +150,10 @@ type HeartbeatRequest struct {
 	SwapUsedBytes  *uint64 `json:"swap_used_bytes,omitempty"`
 	// CPUCores is what CPUPercent is a share of.
 	CPUCores int `json:"cpu_cores,omitempty"`
+	// StorageBreakdown is what the disk's used space consists of, sent when
+	// a new scan finished (see internal/storage); omitted otherwise, which
+	// leaves the stored one as it was.
+	StorageBreakdown *storage.Breakdown `json:"storage_breakdown,omitempty"`
 	// GPU model, core count (Apple Silicon) and usage; omitted when the
 	// host has none or can't tell.
 	GPUName    string   `json:"gpu_name,omitempty"`

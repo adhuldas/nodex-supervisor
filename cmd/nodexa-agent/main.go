@@ -32,6 +32,7 @@ import (
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/location"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/provisioning"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/state"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/storage"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/system"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/update"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/version"
@@ -270,6 +271,11 @@ func main() {
 	// --- health ---
 	healthChecker := health.NewChecker(cfg.DataDir, containerMgr.Ready, hasNetworkConnectivity)
 
+	// What the disk's used space consists of (Docker, logs, ...), measured
+	// in the background and sent with the heartbeat once per scan.
+	storageScanner := storage.NewScanner(cfg.DataDir, cfg.DataDir)
+	go storageScanner.Run(ctx)
+
 	// --- API server ---
 	server := api.New(cfg.SocketPath, api.Deps{
 		Identity:    deviceIdentity,
@@ -361,8 +367,12 @@ func main() {
 					}
 					conns, wifiSSID := wifi.DetectConnections(probeCtx)
 					cancelProbe()
-					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
+					storageReport := storageScanner.Pending()
+					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, storageReport, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
 					if resp != nil {
+						// Accepted: not sent again until the next scan. A failed
+						// heartbeat leaves it pending for the next one.
+						storageScanner.Acknowledge(storageReport)
 						if resp.FleetTransfer != nil {
 							transfers.handle(ctx, token, *resp.FleetTransfer)
 						} else if resp.DeploymentRevision == nil && !deployMgr.IsApplying() && deployMgr.HasDeployed() {
@@ -691,7 +701,7 @@ func connectVPN(ctx context.Context, provider vpn.Provider, bus *events.Bus, ipH
 // fatal -- heartbeats are best-effort, same as registration itself.
 // Returns nil on failure, or the response the caller uses to detect a
 // deployment revision change or pinned agent/OS update.
-func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, tailscaleIP string, location *backend.Location, isWifi bool, isGSM bool, conns []string, wifiSSID string, wifiNets []wifi.WifiNetwork, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
+func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token string, report health.Report, containers *[]backend.ContainerState, apps []backend.AppUsage, storageReport *storage.Breakdown, tailscaleIP string, location *backend.Location, isWifi bool, isGSM bool, conns []string, wifiSSID string, wifiNets []wifi.WifiNetwork, updater *update.AgentUpdater, osUpdater *update.OSUpdater) *backend.HeartbeatResponse {
 	var ip *string
 	if tailscaleIP != "" {
 		ip = &tailscaleIP
@@ -739,6 +749,7 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		DiskUsedBytes:     report.DiskUsedBytes,
 		SwapTotalBytes:    report.SwapTotalBytes,
 		SwapUsedBytes:     report.SwapUsedBytes,
+		StorageBreakdown:  storageReport,
 		CPUCores:          runtime.NumCPU(),
 		GPUName:           report.GPUName,
 		GPUCores:          report.GPUCores,
