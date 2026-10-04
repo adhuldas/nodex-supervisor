@@ -27,3 +27,4 @@ __pycache__/
 *.swp
 .claude/
 .serena/
+.codex/
