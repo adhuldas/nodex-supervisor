@@ -81,9 +81,32 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+  # Clears the build artifacts of earlier runs before this one builds, so
+  # only the release being built is ever kept. Nothing is lost: each GitHub
+  # release keeps its own copy of every file, and publish-dashboard only
+  # uses this run's artifacts.
+  cleanup-artifacts:
+    name: Delete old build artifacts
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete artifacts from earlier runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.name | startswith(\"assets-\")) | select(.workflow_run.id != ${GITHUB_RUN_ID}) | .id" \
+          | while read -r id; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}"
+              echo "Deleted artifact ${id}"
+            done
+
   build:
     name: Build (${{ matrix.os }}-${{ matrix.display_arch || matrix.arch }})
-    needs: check-release
+    needs: [check-release, cleanup-artifacts]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -335,24 +358,3 @@ jobs:
             curl -sS -o /dev/null -b "$JAR" -X POST "$DASHBOARD_API/auth/signout" || true
             rm -f "$JAR"
           fi
-
-  # Once this release is on GitHub and the dashboard, the build artifacts
-  # of earlier runs are no longer needed: the release keeps its own copy
-  # of every file. This run's artifacts stay until the next release.
-  cleanup-artifacts:
-    name: Delete old build artifacts
-    needs: [publish, publish-dashboard]
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Delete artifacts from earlier runs
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-            --jq ".artifacts[] | select(.name | startswith(\"assets-\")) | select(.workflow_run.id != ${GITHUB_RUN_ID}) | .id" \
-          | while read -r id; do
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}"
-              echo "Deleted artifact ${id}"
-            done
