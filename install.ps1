@@ -234,7 +234,17 @@ function Check-ContainerPrerequisites {
 
     $dockerCmd = Get-Command "docker" -ErrorAction SilentlyContinue
     if ($dockerCmd) {
-        $dockerVersion = & docker version --format '{{.Server.Version}}' 2>$null
+        $dockerVersion = $null
+        $origEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'SilentlyContinue'
+            $dockerVersion = (& docker version --format '{{.Server.Version}}' 2>$null)
+        } catch {
+            $dockerVersion = $null
+        } finally {
+            $ErrorActionPreference = $origEAP
+        }
+
         if ($LASTEXITCODE -eq 0 -and $dockerVersion) {
             Write-Host "  [✓] Docker detected and running (server v$dockerVersion)." -ForegroundColor Green
             Write-Host "      nodex-supervisor will use Docker for container deployment & management."
@@ -264,8 +274,21 @@ function Check-TailscalePrerequisite {
     Write-Host "==> Checking Tailscale networking prerequisite..." -ForegroundColor Cyan
     $tsCmd = Get-Command "tailscale" -ErrorAction SilentlyContinue
     if ($tsCmd) {
-        $tsVer = & tailscale version 2>$null | Select-Object -First 1
-        Write-Host "  [✓] Tailscale is installed ($tsVer)." -ForegroundColor Green
+        $tsVer = $null
+        $origEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'SilentlyContinue'
+            $tsVer = (& tailscale version 2>$null | Select-Object -First 1)
+        } catch {
+            $tsVer = $null
+        } finally {
+            $ErrorActionPreference = $origEAP
+        }
+        if ($tsVer) {
+            Write-Host "  [✓] Tailscale is installed ($tsVer)." -ForegroundColor Green
+        } else {
+            Write-Host "  [✓] Tailscale is installed." -ForegroundColor Green
+        }
         return
     }
 
@@ -302,7 +325,15 @@ function Check-TailscalePrerequisite {
 
         $wingetCmd = Get-Command "winget" -ErrorAction SilentlyContinue
         if ($wingetCmd) {
-            & winget install --id Tailscale.Tailscale -e --accept-source-agreements --accept-package-agreements
+            $origEAP = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'SilentlyContinue'
+                & winget install --id Tailscale.Tailscale -e --accept-source-agreements --accept-package-agreements
+            } catch {
+                # winget might write stderr or fail
+            } finally {
+                $ErrorActionPreference = $origEAP
+            }
             if ($LASTEXITCODE -eq 0) {
                 $installed = $true
             }
@@ -502,7 +533,11 @@ try {
 
     Write-Host "==> Successfully installed $BinName to $target"
     Write-Host "==> Alias $AliasName copied to $aliasTarget"
-    & $target version
+    try {
+        & $target version
+    } catch {
+        # ignore version display error
+    }
 } finally {
     if (Test-Path $tempDir) {
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
