@@ -78,6 +78,41 @@ func parseBootTime(out string) (unixSec int64, ok bool) {
 	return v, err == nil
 }
 
+// parseGPUCores parses `system_profiler SPDisplaysDataType`, returning the
+// first GPU's model and core count ("Total Number of Cores" is only listed
+// for Apple Silicon; 0 otherwise).
+func parseGPUCores(out string) (name string, cores int) {
+	for _, line := range strings.Split(out, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch key {
+		case "Chipset Model":
+			if name == "" {
+				name = val
+			}
+		case "Total Number of Cores":
+			if cores == 0 {
+				cores, _ = strconv.Atoi(val)
+			}
+		}
+	}
+	return name, cores
+}
+
+// parseGPUUtilization returns the busiest GPU's "Device Utilization %" from
+// `ioreg -r -c IOAccelerator`; ok is false when none is listed.
+func parseGPUUtilization(out string) (percent float64, ok bool) {
+	for _, m := range regexp.MustCompile(`"Device Utilization %"\s*=\s*(\d+)`).FindAllStringSubmatch(out, -1) {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			percent, ok = max(percent, v), true
+		}
+	}
+	return min(percent, 100), ok
+}
+
 // parseTopCPU returns CPU use from the last "CPU usage: ... X% idle" line of
 // `top -l 2`; the first sample is an average since boot.
 func parseTopCPU(out string) (percent float64, ok bool) {

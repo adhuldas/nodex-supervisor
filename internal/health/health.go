@@ -60,6 +60,12 @@ type Report struct {
 	// above, 0C is a plausible real reading, so it can't double as "unknown".
 	TemperatureC *float64 `json:"temperature_c,omitempty"`
 
+	// GPU, nil/empty when the host has none or can't tell. GPUPercent is
+	// nil, not 0, for the same reason as TemperatureC: 0% is a real reading.
+	GPUName    string   `json:"gpu_name,omitempty"`
+	GPUCores   int      `json:"gpu_cores,omitempty"`
+	GPUPercent *float64 `json:"gpu_percent,omitempty"`
+
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -84,6 +90,12 @@ type Checker struct {
 	prevCPUIdle  uint64
 	prevCPUTotal uint64
 	havePrevCPU  bool
+
+	// gpu is looked up once: the name and core count don't change, and
+	// finding them is slow.
+	gpuOnce sync.Once
+	gpuName string
+	gpuCore int
 }
 
 // NewChecker creates a Checker that reports on diskPath's filesystem usage.

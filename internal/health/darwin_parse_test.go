@@ -19,6 +19,16 @@ func TestDarwinParsers(t *testing.T) {
 	if sec, ok := parseBootTime("{ sec = 1790567922, usec = 564922 } Mon Sep 28 09:28:42 2026"); !ok || sec != 1790567922 {
 		t.Errorf("parseBootTime = %d %v", sec, ok)
 	}
+	profiler := "Graphics/Displays:\n\n    Apple M5:\n\n      Chipset Model: Apple M5\n      Type: GPU\n      Total Number of Cores: 10\n      Vendor: Apple (0x106b)\n"
+	if name, cores := parseGPUCores(profiler); name != "Apple M5" || cores != 10 {
+		t.Errorf("parseGPUCores = %q %d", name, cores)
+	}
+	if pct, ok := parseGPUUtilization(`"PerformanceStatistics" = {"Tiler Utilization %"=3,"Device Utilization %"=42,"Renderer Utilization %"=1}` + "\n" + `{"Device Utilization %"=7}`); !ok || pct != 42 {
+		t.Errorf("parseGPUUtilization = %v %v", pct, ok)
+	}
+	if _, ok := parseGPUUtilization("no accelerators"); ok {
+		t.Error("parseGPUUtilization found a value in nothing")
+	}
 	top := "CPU usage: 60.99% user, 14.37% sys, 24.63% idle \nCPU usage: 60.87% user, 6.23% sys, 32.88% idle\n"
 	if pct, ok := parseTopCPU(top); !ok || pct < 67.11 || pct > 67.13 {
 		t.Errorf("parseTopCPU = %v %v", pct, ok)

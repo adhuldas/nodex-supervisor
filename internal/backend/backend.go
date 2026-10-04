@@ -149,6 +149,11 @@ type HeartbeatRequest struct {
 	SwapUsedBytes  *uint64 `json:"swap_used_bytes,omitempty"`
 	// CPUCores is what CPUPercent is a share of.
 	CPUCores int `json:"cpu_cores,omitempty"`
+	// GPU model, core count (Apple Silicon) and usage; omitted when the
+	// host has none or can't tell.
+	GPUName    string   `json:"gpu_name,omitempty"`
+	GPUCores   int      `json:"gpu_cores,omitempty"`
+	GPUPercent *float64 `json:"gpu_percent,omitempty"`
 	// Load averages over 1/5/15 minutes and seconds since boot.
 	LoadAvg1      *float64 `json:"load_avg_1m,omitempty"`
 	LoadAvg5      *float64 `json:"load_avg_5m,omitempty"`

@@ -39,6 +39,17 @@ func (c *Checker) readPlatform(r *Report) {
 			}
 		}
 	}
+	c.gpuOnce.Do(func() {
+		if out, ok := runTool("system_profiler", "SPDisplaysDataType"); ok {
+			c.gpuName, c.gpuCore = parseGPUCores(out)
+		}
+	})
+	r.GPUName, r.GPUCores = c.gpuName, c.gpuCore
+	if out, ok := runTool("ioreg", "-r", "-d", "1", "-w0", "-c", "IOAccelerator"); ok {
+		if pct, ok := parseGPUUtilization(out); ok {
+			r.GPUPercent = &pct
+		}
+	}
 	// Two one-second samples: the first is an average since boot.
 	if out, ok := runTool("top", "-l", "2", "-n", "0", "-s", "1"); ok {
 		if pct, ok := parseTopCPU(out); ok {
