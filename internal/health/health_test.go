@@ -3,6 +3,7 @@ package health
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -93,7 +94,8 @@ func TestCheckPopulatesNewFields(t *testing.T) {
 	c := NewChecker("", nil, nil)
 	report := c.Check()
 
-	if report.CPUPercent != 0 {
+	// /proc/stat needs two samples; macOS's top measures one directly.
+	if runtime.GOOS != "darwin" && report.CPUPercent != 0 {
 		t.Fatalf("expected 0 CPUPercent on first Check, got %v", report.CPUPercent)
 	}
 	// TemperatureC is expected to be nil on the (non-Linux) test machine;

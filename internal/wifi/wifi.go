@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,10 +56,17 @@ var (
 	sysIeee80211Dir    = "/sys/class/ieee80211"
 )
 
+// hostOS is runtime.GOOS; tests set it to run the Linux code paths on any
+// machine.
+var hostOS = runtime.GOOS
+
 // Supported reports whether Wi-Fi hardware or interfaces are available on the host.
 // It checks sysfs paths (/sys/class/net/*/phy80211, /sys/class/net/*/wireless, /sys/class/ieee80211)
 // and falls back to inspecting `nmcli dev` if sysfs has no wireless devices.
 func Supported(ctx context.Context) bool {
+	if hostOS == "darwin" {
+		return darwinWifiSupported(ctx)
+	}
 	if matches, err := filepath.Glob(sysNetPhyGlob); err == nil && len(matches) > 0 {
 		return true
 	}
@@ -487,6 +495,9 @@ func parseSSIDFromKeyfile(content []byte) string {
 // Scan lists visible Wi-Fi access points using nmcli.
 // If Wi-Fi is not supported, nmcli is not installed, or the scan fails, Scan returns nil, nil.
 func Scan(ctx context.Context) ([]WifiNetwork, error) {
+	if hostOS == "darwin" {
+		return nil, nil // macOS has no supported command-line scan
+	}
 	if !Supported(ctx) {
 		return nil, nil
 	}
@@ -601,6 +612,10 @@ func normalizeSecurity(sec string) string {
 
 // ConnectedSSID returns the SSID of the active Wi-Fi connection, or "" if not connected.
 func ConnectedSSID(ctx context.Context) string {
+	if hostOS == "darwin" {
+		_, _, ssid := darwinConnections(ctx)
+		return ssid
+	}
 	if lookNmcli() {
 		// Try ACTIVE,SSID
 		if out, err := exec.CommandContext(ctx, nmcliPath, "-t", "-f", "ACTIVE,SSID", "dev", "wifi").Output(); err == nil {
@@ -646,6 +661,17 @@ func parseActiveSSID(output string) string {
 // DetectConnections checks the system for active network connections ("ethernet", "wifi")
 // and returns the active connection types and the connected Wi-Fi SSID if Wi-Fi is connected.
 func DetectConnections(ctx context.Context) ([]string, string) {
+	if hostOS == "darwin" {
+		hasWifi, hasEth, ssid := darwinConnections(ctx)
+		var conns []string
+		if hasEth {
+			conns = append(conns, "ethernet")
+		}
+		if hasWifi {
+			conns = append(conns, "wifi")
+		}
+		return conns, ssid
+	}
 	hasEth := false
 	hasWifi := false
 	wifiSSID := ConnectedSSID(ctx)

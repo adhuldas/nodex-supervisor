@@ -105,6 +105,7 @@ func (c *Checker) Check() Report {
 	r.SwapTotalBytes, r.SwapUsedBytes = readSwapUsage()
 	r.DiskUsedPercent, r.DiskTotalBytes, r.DiskUsedBytes = diskUsage(c.DiskPath)
 	r.TemperatureC = readTemperatureC()
+	c.readPlatform(&r)
 
 	if c.RuntimeCheck != nil && c.RuntimeCheck() {
 		r.Runtime = StatusHealthy

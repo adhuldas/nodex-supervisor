@@ -12,7 +12,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -55,6 +57,19 @@ func tailscaleBinPath() string {
 	if p, err := exec.LookPath("tailscale"); err == nil {
 		return p
 	}
+	// The Tailscale app for macOS keeps its CLI inside the app bundle,
+	// which isn't on PATH (daemons get a minimal PATH anyway).
+	if runtime.GOOS == "darwin" {
+		for _, p := range []string{
+			"/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+			"/opt/homebrew/bin/tailscale",
+			"/usr/local/bin/tailscale",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	return "/usr/bin/tailscale"
 }
 
@@ -76,23 +91,47 @@ type TailscaleProvider struct {
 // separate SSH server/credential of its own. Idempotent: safe to call on
 // every boot regardless of whether the device is already joined.
 func (p TailscaleProvider) Connect(ctx context.Context) error {
-	var stderr bytes.Buffer
 	bin := tailscaleBinPath()
-	cmd := exec.CommandContext(ctx, bin, "up",
-		"--authkey="+p.AuthKey,
-		"--hostname="+p.Hostname,
+	args := []string{"up",
+		"--authkey=" + p.AuthKey,
+		"--hostname=" + p.Hostname,
 		"--ssh",
 		"--accept-dns=false", // this device's own resolver config, not the tailnet's, stays authoritative
-	)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	}
+	out, err := runTailscale(ctx, bin, args)
+
+	// The host already runs Tailscale with settings of its own (e.g.
+	// --accept-routes): tailscale refuses to change them implicitly and
+	// prints the command that keeps them. Run that rather than --reset,
+	// which would drop the host's settings.
+	if err != nil {
+		if kept := keepSettingsArgs(out); kept != nil {
+			args = kept
+			out, err = runTailscale(ctx, bin, args)
+		}
+	}
+
+	// Tailscale's macOS app (App Store or standalone) can't run the
+	// Tailscale SSH server: join without it so the tailnet IP is still
+	// reported.
+	ssh := true
+	if err != nil && sshUnsupported(out) {
+		args = withoutArg(args, "--ssh")
+		ssh = false
+		out, err = runTailscale(ctx, bin, args)
+	}
+
+	if err != nil {
 		// On a third-party host tailscaled is the host's own service and
 		// may be stopped or not enabled at boot; start it so the next
 		// retry (connectVPN's backoff) can connect.
-		if strings.Contains(stderr.String(), "tailscaled") && startTailscaled(ctx) == nil {
-			return fmt.Errorf("vpn: tailscaled was not running, started it: %s", strings.TrimSpace(stderr.String()))
+		if strings.Contains(out, "tailscaled") && startTailscaled(ctx) == nil {
+			return fmt.Errorf("vpn: tailscaled was not running, started it: %s", redactKeys(strings.TrimSpace(out)))
 		}
-		return fmt.Errorf("vpn: tailscale up: %w: %s", err, stderr.String())
+		return fmt.Errorf("vpn: tailscale up: %w: %s", err, redactKeys(out))
+	}
+	if !ssh {
+		return nil
 	}
 
 	// "up --ssh" already turns Tailscale SSH on for this call, but that
@@ -100,13 +139,63 @@ func (p TailscaleProvider) Connect(ctx context.Context) error {
 	// "tailscale set --ssh" makes it a durable node setting instead, so it
 	// stays on even across a future "tailscale up" run (manual re-auth,
 	// key rotation, etc.) that forgets to repeat --ssh.
-	stderr.Reset()
-	setCmd := exec.CommandContext(ctx, bin, "set", "--ssh")
-	setCmd.Stderr = &stderr
-	if err := setCmd.Run(); err != nil {
-		return fmt.Errorf("vpn: tailscale set --ssh: %w: %s", err, stderr.String())
+	if out, err := runTailscale(ctx, bin, []string{"set", "--ssh"}); err != nil {
+		return fmt.Errorf("vpn: tailscale set --ssh: %w: %s", err, redactKeys(out))
 	}
 	return nil
+}
+
+func runTailscale(ctx context.Context, bin string, args []string) (string, error) {
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return out.String(), err
+}
+
+// keepSettingsArgs returns the "up ..." arguments of the command tailscale
+// suggests for keeping the host's current settings, or nil if out has none.
+// Only --flags are accepted, so nothing else from tailscale's output is
+// ever run.
+func keepSettingsArgs(out string) []string {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "tailscale" || fields[1] != "up" {
+			continue
+		}
+		for _, f := range fields[2:] {
+			if !strings.HasPrefix(f, "--") {
+				return nil
+			}
+		}
+		return fields[1:]
+	}
+	return nil
+}
+
+func sshUnsupported(out string) bool {
+	o := strings.ToLower(out)
+	return strings.Contains(o, "ssh") &&
+		(strings.Contains(o, "not supported") || strings.Contains(o, "sandbox") || strings.Contains(o, "not available"))
+}
+
+func withoutArg(args []string, drop string) []string {
+	var kept []string
+	for _, a := range args {
+		if a != drop && a != drop+"=true" {
+			kept = append(kept, a)
+		}
+	}
+	return kept
+}
+
+var authKeyPattern = regexp.MustCompile(`tskey-[A-Za-z0-9_-]+`)
+
+// redactKeys hides Tailscale auth keys: tailscale echoes them back in its
+// error output, which ends up in the device log.
+func redactKeys(s string) string {
+	return authKeyPattern.ReplaceAllString(s, "tskey-[redacted]")
 }
 
 // IP returns this device's tailnet IPv4 address via "tailscale ip -4", for
