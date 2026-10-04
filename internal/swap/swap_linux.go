@@ -76,6 +76,40 @@ func Create(ctx context.Context, sizeMB int) error {
 	return nil
 }
 
+// Delete turns off Path if active, removes the file, and removes its entry
+// from /etc/fstab so it does not re-enable on boot.
+func Delete(ctx context.Context) error {
+	if procSwaps, err := os.ReadFile("/proc/swaps"); err == nil && isActive(string(procSwaps)) {
+		if err := run(ctx, "swapoff", Path); err != nil {
+			return fmt.Errorf("swap: turning off the swap file: %w", err)
+		}
+	}
+
+	if err := os.Remove(Path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("swap: removing swap file: %w", err)
+	}
+
+	fstab, err := os.ReadFile(fstabPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("swap: reading %s: %w", fstabPath, err)
+	}
+
+	if updated := withoutFstabEntry(string(fstab)); updated != string(fstab) {
+		tmp := fstabPath + ".nodexa.tmp"
+		if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
+			return fmt.Errorf("swap: updating %s: %w", fstabPath, err)
+		}
+		if err := os.Rename(tmp, fstabPath); err != nil {
+			os.Remove(tmp)
+			return fmt.Errorf("swap: updating %s: %w", fstabPath, err)
+		}
+	}
+	return nil
+}
+
 func writeSwapFile(ctx context.Context, sizeMB int, zeroFill bool) error {
 	os.Remove(Path)
 	var err error

@@ -145,8 +145,10 @@ func (r *actionRunner) dispatch(ctx context.Context, token string, target backen
 			r.bus.Emit(events.NetworkReady, "wifi network changed via cloud action", events.Fieldsf("ssid", "%s", creds.SSID))
 		}
 		return nil
-	case "create_swap":
+	case "create_swap", "update_swap", "resize_swap":
 		return swap.Create(ctx, target.SwapSizeMB)
+	case "delete_swap", "remove_swap":
+		return swap.Delete(ctx)
 	default:
 		return fmt.Errorf("unsupported action %q", target.Action)
 	}

@@ -16,3 +16,8 @@ func Create(ctx context.Context, sizeMB int) error {
 	}
 	return fmt.Errorf("swap: creating swap is only supported on Linux hosts, not %s", runtime.GOOS)
 }
+
+// Delete is a no-op on non-Linux hosts.
+func Delete(ctx context.Context) error {
+	return nil
+}

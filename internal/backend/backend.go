@@ -263,7 +263,7 @@ type WifiNetwork struct {
 // response never runs it twice.
 type DeviceActionTarget struct {
 	ID     string `json:"id"`
-	Action string `json:"action"` // "identify", "restart_services", "reboot", "purge_data", "shutdown", "start_container", "stop_container", "restart_container", "change_wifi", "set_wifi"
+	Action string `json:"action"` // "identify", "restart_services", "reboot", "purge_data", "shutdown", "start_container", "stop_container", "restart_container", "change_wifi", "set_wifi", "create_swap", "delete_swap"
 	// Container names the target of the *_container actions.
 	Container string `json:"container,omitempty"`
 	// SSID and Password are used for the change_wifi / set_wifi actions.
