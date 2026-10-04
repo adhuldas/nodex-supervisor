@@ -144,6 +144,9 @@ type HeartbeatRequest struct {
 	MemUsedBytes   uint64 `json:"mem_used_bytes"`
 	DiskTotalBytes uint64 `json:"disk_total_bytes"`
 	DiskUsedBytes  uint64 `json:"disk_used_bytes"`
+	// Swap space; omitted where the device can't tell (non-Linux).
+	SwapTotalBytes *uint64 `json:"swap_total_bytes,omitempty"`
+	SwapUsedBytes  *uint64 `json:"swap_used_bytes,omitempty"`
 	// CPUCores is what CPUPercent is a share of.
 	CPUCores int `json:"cpu_cores,omitempty"`
 	// Load averages over 1/5/15 minutes and seconds since boot.
@@ -266,6 +269,8 @@ type DeviceActionTarget struct {
 	// SSID and Password are used for the change_wifi / set_wifi actions.
 	SSID     string `json:"ssid,omitempty"`
 	Password string `json:"password,omitempty"`
+	// SwapSizeMB is the swap file size for the create_swap action.
+	SwapSizeMB int `json:"swap_size_mb,omitempty"`
 }
 
 // FleetTransferTarget is a dashboard-requested move to another fleet. The

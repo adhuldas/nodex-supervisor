@@ -15,6 +15,7 @@ import (
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/backend"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/container"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/events"
+	"github.com/nodexa/nodexa-os/nodexa-agent/internal/swap"
 	"github.com/nodexa/nodexa-os/nodexa-agent/internal/wifi"
 )
 
@@ -144,6 +145,8 @@ func (r *actionRunner) dispatch(ctx context.Context, token string, target backen
 			r.bus.Emit(events.NetworkReady, "wifi network changed via cloud action", events.Fieldsf("ssid", "%s", creds.SSID))
 		}
 		return nil
+	case "create_swap":
+		return swap.Create(ctx, target.SwapSizeMB)
 	default:
 		return fmt.Errorf("unsupported action %q", target.Action)
 	}

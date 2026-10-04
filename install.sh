@@ -201,7 +201,12 @@ if [ "${DO_UNINSTALL}" = "1" ]; then
     remove_service
     echo "==> Uninstalling ${BIN_NAME} and ${ALIAS_NAME} from ${INSTALL_DIR}..."
     removed=0
-    for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}"; do
+    # nodex only when it's our alias, never the Nodex cloud CLI.
+    nodex_alias=""
+    if [ -L "${INSTALL_DIR}/nodex" ] && [ "$(readlink "${INSTALL_DIR}/nodex")" = "${INSTALL_DIR}/nodexactl" ]; then
+        nodex_alias="${INSTALL_DIR}/nodex"
+    fi
+    for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}" "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodexa" ${nodex_alias:+"${nodex_alias}"}; do
         if [ -e "${target_bin}" ] || [ -L "${target_bin}" ]; then
             if [ -w "${INSTALL_DIR}" ]; then
                 rm -f "${target_bin}"
@@ -403,6 +408,46 @@ run_install() {
     fi
 }
 
+# Installs the local CLI as nodexactl (same name as on Nodexa OS) with
+# `nodexa` and `nodex` aliases. A `nodex` that isn't ours (the cloud CLI,
+# from nodex-cli's installer) is kept rather than replaced.
+install_cli() {
+    local src="$1"
+    if [ ! -f "${src}" ]; then
+        echo "  [!] This release has no nodexactl; the local CLI was not installed."
+        return 0
+    fi
+    if [ -w "${INSTALL_DIR}" ]; then
+        cp -f "${src}" "${INSTALL_DIR}/nodexactl"
+        chmod 0755 "${INSTALL_DIR}/nodexactl"
+        ln -sf "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodexa"
+    else
+        sudo cp -f "${src}" "${INSTALL_DIR}/nodexactl"
+        sudo chmod 0755 "${INSTALL_DIR}/nodexactl"
+        sudo ln -sf "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodexa"
+    fi
+    local aliases="nodexa" try="nodexa"
+    if nodex_alias_free; then
+        if [ -w "${INSTALL_DIR}" ]; then
+            ln -sf "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodex"
+        else
+            sudo ln -sf "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodex"
+        fi
+        aliases="nodexa, nodex"
+        try="nodex"
+    else
+        echo "  [!] ${INSTALL_DIR}/nodex is another program (the Nodex cloud CLI?); left as is. Use nodexa instead."
+    fi
+    echo "==> Installed CLI ${INSTALL_DIR}/nodexactl (aliases: ${aliases}). Try: sudo ${try} ps"
+}
+
+# True when INSTALL_DIR/nodex is absent or already our alias.
+nodex_alias_free() {
+    local link="${INSTALL_DIR}/nodex"
+    [ ! -e "${link}" ] && [ ! -L "${link}" ] && return 0
+    [ -L "${link}" ] && [ "$(readlink "${link}")" = "${INSTALL_DIR}/nodexactl" ]
+}
+
 configure_fleet() {
     if [ -z "${FLEET_ID}" ]; then
         if [ -t 0 ]; then
@@ -464,6 +509,11 @@ if [ -f "./cmd/nodexa-agent/main.go" ] && command -v go >/dev/null 2>&1; then
     run_install "${TMP_BIN}" "${TARGET}"
     rm -f "${TMP_BIN}"
 
+    TMP_CLI="$(mktemp -t nodexactl.XXXXXX)"
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "${TMP_CLI}" ./cmd/nodexactl
+    install_cli "${TMP_CLI}"
+    rm -f "${TMP_CLI}"
+
     configure_fleet
     setup_service
 
@@ -496,6 +546,8 @@ if [ -z "${TAG_NAME}" ]; then
         if [ -f "${GOPATH_BIN}" ]; then
             TARGET="${INSTALL_DIR}/${BIN_NAME}"
             run_install "${GOPATH_BIN}" "${TARGET}"
+            go install "github.com/${REPO}/cmd/nodexactl@latest" || true
+            install_cli "$(go env GOPATH)/bin/nodexactl"
             configure_fleet
             setup_service
             echo "==> Successfully installed ${BIN_NAME} to ${TARGET}"
@@ -540,6 +592,7 @@ fi
 
 TARGET="${INSTALL_DIR}/${BIN_NAME}"
 run_install "${EXTRACTED_BIN}" "${TARGET}"
+install_cli "${TMP_DIR}/nodexactl"
 
 configure_fleet
 setup_service

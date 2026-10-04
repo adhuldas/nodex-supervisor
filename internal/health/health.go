@@ -50,6 +50,11 @@ type Report struct {
 	DiskTotalBytes uint64 `json:"disk_total_bytes"`
 	DiskUsedBytes  uint64 `json:"disk_used_bytes"`
 
+	// Swap space, nil where /proc/meminfo doesn't exist (non-Linux);
+	// a total of 0 means the device has no swap.
+	SwapTotalBytes *uint64 `json:"swap_total_bytes,omitempty"`
+	SwapUsedBytes  *uint64 `json:"swap_used_bytes,omitempty"`
+
 	// TemperatureC is nil, not 0, when unavailable (many VMs and every
 	// non-Linux dev machine have no thermal_zone0) -- unlike the metrics
 	// above, 0C is a plausible real reading, so it can't double as "unknown".
@@ -97,6 +102,7 @@ func (c *Checker) Check() Report {
 	r.UptimeSeconds = readUptime()
 	r.CPUPercent = c.readCPUPercent()
 	r.MemUsedPercent, r.MemTotalBytes, r.MemUsedBytes = readMemUsage()
+	r.SwapTotalBytes, r.SwapUsedBytes = readSwapUsage()
 	r.DiskUsedPercent, r.DiskTotalBytes, r.DiskUsedBytes = diskUsage(c.DiskPath)
 	r.TemperatureC = readTemperatureC()
 
@@ -282,6 +288,36 @@ func readMemUsage() (usedPercent float64, totalBytes, usedBytes uint64) {
 	totalBytes = uint64(totalKiB) * 1024
 	usedBytes = uint64(totalKiB-availableKiB) * 1024
 	return usedPercent, totalBytes, usedBytes
+}
+
+// readSwapUsage reads SwapTotal:/SwapFree: (KiB) from /proc/meminfo; nil,
+// nil when it can't be read.
+func readSwapUsage() (totalBytes, usedBytes *uint64) {
+	f, err := os.Open(procMemInfoPath)
+	if err != nil {
+		return nil, nil
+	}
+	defer f.Close()
+
+	var totalKiB, freeKiB float64
+	found := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "SwapTotal:"):
+			totalKiB = parseMemInfoValue(line)
+			found = true
+		case strings.HasPrefix(line, "SwapFree:"):
+			freeKiB = parseMemInfoValue(line)
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	total := uint64(totalKiB) * 1024
+	used := uint64(max(totalKiB-freeKiB, 0)) * 1024
+	return &total, &used
 }
 
 func parseMemInfoValue(line string) float64 {

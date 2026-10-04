@@ -59,7 +59,12 @@ elif [ -f "${LAUNCHD_PLIST}" ]; then
 fi
 
 
-for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}"; do
+# nodex only when it's our alias, never the Nodex cloud CLI.
+nodex_alias=""
+if [ -L "${INSTALL_DIR}/nodex" ] && [ "$(readlink "${INSTALL_DIR}/nodex")" = "${INSTALL_DIR}/nodexactl" ]; then
+    nodex_alias="${INSTALL_DIR}/nodex"
+fi
+for target_bin in "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${ALIAS_NAME}" "${INSTALL_DIR}/nodexactl" "${INSTALL_DIR}/nodexa" ${nodex_alias:+"${nodex_alias}"}; do
     if [ -e "${target_bin}" ] || [ -L "${target_bin}" ]; then
         if [ -w "${INSTALL_DIR}" ]; then
             rm -f "${target_bin}"

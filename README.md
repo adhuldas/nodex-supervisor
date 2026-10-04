@@ -141,6 +141,20 @@ When started, `nodex-supervisor`:
 3. Sets up the control socket at `/run/nodexa/agent.sock` (`/var/run/nodexa/agent.sock` on macOS).
 4. Connects to the configured cloud endpoint and begins health monitoring.
 
+### Local CLI
+
+The installer also adds `nodexactl` (aliases `nodexa` and `nodex`), the same local CLI Nodexa OS ships. It talks to the running supervisor over its local socket, so it needs `sudo`:
+
+```bash
+sudo nodex ps                     # containers, including the host's own Docker ones
+sudo nodex images
+sudo nodex logs -f <name>
+sudo nodex exec -it <name> sh     # docker/nerdctl exec on Docker hosts
+sudo nodex status
+```
+
+If the Nodex cloud CLI is already installed as `nodex`, the installer keeps it and only adds `nodexactl` and `nodexa`.
+
 ### Checking Version
 
 ```bash

@@ -737,6 +737,8 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 		MemUsedBytes:      report.MemUsedBytes,
 		DiskTotalBytes:    report.DiskTotalBytes,
 		DiskUsedBytes:     report.DiskUsedBytes,
+		SwapTotalBytes:    report.SwapTotalBytes,
+		SwapUsedBytes:     report.SwapUsedBytes,
 		CPUCores:          runtime.NumCPU(),
 		LoadAvg1:          &report.LoadAvg1,
 		LoadAvg5:          &report.LoadAvg5,

@@ -160,6 +160,8 @@ jobs:
 
           go build -trimpath -ldflags "${LDFLAGS}" -o "${STAGE_DIR}/${BIN_NAME}" ./cmd/nodexa-agent
           cp "${STAGE_DIR}/${BIN_NAME}" "${STAGE_DIR}/${ALIAS_NAME}"
+          # Local CLI (nodexactl ps/logs/exec ...) for the host's own shell.
+          go build -trimpath -ldflags "-s -w" -o "${STAGE_DIR}/nodexactl${{ matrix.ext }}" ./cmd/nodexactl
 
           if [ "${{ matrix.os }}" = "windows" ]; then
             (cd "${STAGE_DIR}" && zip -r "../nodex-supervisor_${{ matrix.os }}_${DISPLAY_ARCH}.zip" .)
