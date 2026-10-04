@@ -26,12 +26,11 @@ const (
 )
 
 const (
-	// DefaultInterval is how often the disk is re-measured. Storage
-	// composition moves slowly, and each scan costs real disk I/O.
-	DefaultInterval = 15 * time.Minute
+	// DefaultInterval is how often the disk is re-measured.
+	DefaultInterval = 1 * time.Minute
 
 	// initialDelay keeps the first scan out of the agent's startup.
-	initialDelay = 90 * time.Second
+	initialDelay = 0 * time.Second
 
 	// scanTimeout abandons a scan that takes unreasonably long; a partial
 	// result would understate every directory, so none is kept.
@@ -95,7 +94,18 @@ func NewScanner(diskPath, dataDir string) *Scanner {
 
 // Run scans until ctx is cancelled. Call it in its own goroutine.
 func (s *Scanner) Run(ctx context.Context) {
-	timer := time.NewTimer(initialDelay)
+	if initialDelay > 0 {
+		timer := time.NewTimer(initialDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+	s.scanOnce(ctx)
+
+	timer := time.NewTimer(s.interval)
 	defer timer.Stop()
 	for {
 		select {
@@ -125,6 +135,17 @@ func (s *Scanner) scanOnce(ctx context.Context) {
 	s.mu.Lock()
 	s.latest = b
 	s.mu.Unlock()
+}
+
+// Latest returns the most recent finished scan, or nil if no scan has finished yet.
+func (s *Scanner) Latest() *Breakdown {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.latest == nil {
+		return nil
+	}
+	b := *s.latest
+	return &b
 }
 
 // Pending returns the newest scan the cloud hasn't confirmed yet, or nil.

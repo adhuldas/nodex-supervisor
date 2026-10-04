@@ -389,9 +389,13 @@ if ((Test-Path "./cmd/nodexa-agent/main.go") -and (Get-Command go -ErrorAction S
     $commit = "local"
     $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
+    $osVer = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).DisplayVersion
+    if (-not $osVer) { $osVer = [System.Environment]::OSVersion.Version.ToString() }
+    if (-not $osVer) { $osVer = $ver }
+
     $ldflags = "-s -w " +
         "-X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.AgentVersion=$ver " +
-        "-X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=$ver " +
+        "-X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=$osVer " +
         "-X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.Commit=$commit " +
         "-X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=$date"
 

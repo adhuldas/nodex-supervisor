@@ -202,7 +202,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, StatusResponse{
 		DeviceID:     s.deps.Identity.DeviceID,
-		OSVersion:    version.OSVersion,
+		OSVersion:    update.RunningOSVersion(),
 		AgentVersion: version.AgentVersion,
 		Architecture: sys.Architecture,
 		Uptime:       sys.Uptime,
@@ -215,7 +215,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, version.Info{
-		OSVersion:    version.OSVersion,
+		OSVersion:    update.RunningOSVersion(),
 		AgentVersion: version.AgentVersion,
 		Commit:       version.Commit,
 		BuildDate:    version.BuildDate,

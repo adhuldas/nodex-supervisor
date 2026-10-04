@@ -9,6 +9,9 @@ import (
 )
 
 func TestDarwinCollect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full host storage scan in short mode")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

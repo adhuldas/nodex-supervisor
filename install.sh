@@ -547,9 +547,14 @@ if [ -f "./cmd/nodexa-agent/main.go" ] && command -v go >/dev/null 2>&1; then
     COMMIT="$(git rev-parse --short=12 HEAD 2>/dev/null || echo "local")"
     DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
+    OS_VER="${VER}"
+    if [ "${OS}" = "darwin" ]; then
+        OS_VER="$(sysctl -n kern.osproductversion 2>/dev/null || sw_vers -productVersion 2>/dev/null || echo "${VER}")"
+    fi
+
     LDFLAGS="-s -w \
       -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.AgentVersion=${VER} \
-      -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=${VER} \
+      -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.OSVersion=${OS_VER} \
       -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.Commit=${COMMIT} \
       -X github.com/nodexa/nodexa-os/nodexa-agent/internal/version.BuildDate=${DATE}"
 

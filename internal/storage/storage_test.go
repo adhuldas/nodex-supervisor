@@ -67,3 +67,22 @@ func TestResultIsSentOnceAndResentWhenTheHeartbeatFails(t *testing.T) {
 		t.Fatalf("Pending after a newer scan = %+v", p)
 	}
 }
+
+func TestScannerLatest(t *testing.T) {
+	s := NewScanner("/", "/var/lib/nodexa")
+	if s.Latest() != nil {
+		t.Fatal("latest before any scan should be nil")
+	}
+
+	b := &Breakdown{ScannedAt: time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)}
+	s.latest = b
+	got := s.Latest()
+	if got == nil || !got.ScannedAt.Equal(b.ScannedAt) {
+		t.Fatalf("Latest = %+v, want %+v", got, b)
+	}
+	// Calling Latest multiple times continues to return the latest scan without clearing
+	gotAgain := s.Latest()
+	if gotAgain == nil || !gotAgain.ScannedAt.Equal(b.ScannedAt) {
+		t.Fatalf("Latest again = %+v, want %+v", gotAgain, b)
+	}
+}

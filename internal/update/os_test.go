@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -458,6 +459,19 @@ func TestOlderVersion(t *testing.T) {
 	} {
 		if got := olderVersion(tc.a, tc.b); got != tc.want {
 			t.Errorf("olderVersion(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestRunningOSVersion(t *testing.T) {
+	v := RunningOSVersion()
+	if v == "" {
+		t.Fatal("RunningOSVersion() returned empty string")
+	}
+	if runtime.GOOS == "darwin" {
+		t.Logf("RunningOSVersion() on macOS = %q", v)
+		if v == "0.3.7" {
+			t.Fatalf("RunningOSVersion() returned default version 0.3.7 instead of macOS version")
 		}
 	}
 }

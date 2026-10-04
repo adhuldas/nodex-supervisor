@@ -367,12 +367,9 @@ func main() {
 					}
 					conns, wifiSSID := wifi.DetectConnections(probeCtx)
 					cancelProbe()
-					storageReport := storageScanner.Pending()
+					storageReport := storageScanner.Latest()
 					resp := sendHeartbeat(ctx, backendClient, deviceIdentity.DeviceID, token, report, containers, apps, storageReport, vpnIP.Get(), loc, isWifi, isGSM, conns, wifiSSID, wifiNets, agentUpdater, osUpdater)
 					if resp != nil {
-						// Accepted: not sent again until the next scan. A failed
-						// heartbeat leaves it pending for the next one.
-						storageScanner.Acknowledge(storageReport)
 						if resp.FleetTransfer != nil {
 							transfers.handle(ctx, token, *resp.FleetTransfer)
 						} else if resp.DeploymentRevision == nil && !deployMgr.IsApplying() && deployMgr.HasDeployed() {
@@ -717,7 +714,7 @@ func sendHeartbeat(ctx context.Context, client *backend.Client, deviceID, token 
 	if updater != nil {
 		updateStatus = updater.CurrentProgress()
 	}
-	osVersion := version.OSVersion
+	osVersion := update.RunningOSVersion()
 	var osUpdateStatus *backend.AgentUpdateProgress
 	if osUpdater != nil {
 		osVersion = osUpdater.CurrentVersion()

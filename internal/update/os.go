@@ -140,7 +140,7 @@ func (u *OSUpdater) CurrentVersion() string {
 	if v := readOSReleaseVersion(u.osReleasePath); v != "" {
 		return v
 	}
-	return version.OSVersion
+	return RunningOSVersion()
 }
 
 // CurrentSlot is the root slot this boot came from ("a"/"b"), or "" when
@@ -896,5 +896,31 @@ func RunningOSVersion() string {
 	if v := readOSReleaseVersion("/etc/os-release"); v != "" {
 		return v
 	}
+	if v := hostOSVersion(); v != "" {
+		return v
+	}
 	return version.OSVersion
+}
+
+func hostOSVersion() string {
+	switch runtime.GOOS {
+	case "darwin":
+		if out, err := exec.Command("sysctl", "-n", "kern.osproductversion").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+		if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+	case "windows":
+		if out, err := exec.Command("powershell", "-NoProfile", "-Command", "[System.Environment]::OSVersion.Version.ToString()").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
