@@ -36,6 +36,10 @@ const (
 	// result would understate every directory, so none is kept.
 	scanTimeout = 10 * time.Minute
 
+	// overcountSlack: measured directories may exceed the disk's used space
+	// by 1/overcountSlack (10%) before assemble scales them back.
+	overcountSlack = 10
+
 	// otherPath is the entry for everything on the disk that isn't under a
 	// measured directory.
 	otherPath = "/other"
@@ -69,6 +73,16 @@ func assemble(measured []Entry, usedBytes uint64, scannedAt time.Time) Breakdown
 	}
 	entries := make([]Entry, 0, len(measured)+1)
 	entries = append(entries, measured...)
+	// A sum well past what the disk holds can't be real files (reflinked or
+	// deduplicated copies, a filesystem reporting inflated block counts, ...):
+	// scale the entries down to the disk's used space rather than report
+	// directories adding up to more than the disk. Small overshoot from files
+	// written during the scan is left alone.
+	if usedBytes > 0 && sum > usedBytes+usedBytes/overcountSlack {
+		for i := range entries {
+			entries[i].Bytes = uint64(float64(entries[i].Bytes) / float64(sum) * float64(usedBytes))
+		}
+	}
 	entries = append(entries, Entry{Path: otherPath, Category: CategoryOther, Bytes: other})
 	return Breakdown{ScannedAt: scannedAt, Entries: entries}
 }

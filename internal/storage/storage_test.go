@@ -37,6 +37,25 @@ func TestAssembleNeverGoesNegative(t *testing.T) {
 	}
 }
 
+func TestAssembleScalesAnImpossibleOvercount(t *testing.T) {
+	// /home measured at far more than the disk holds (reflinked copies, say).
+	b := assemble([]Entry{
+		{Path: "/var/lib/docker", Category: CategoryDocker, Bytes: 100},
+		{Path: "/home", Category: CategoryOther, Bytes: 900},
+	}, 500, time.Now())
+
+	var sum uint64
+	for _, e := range b.Entries {
+		sum += e.Bytes
+	}
+	if sum > 500 {
+		t.Fatalf("entries add up to %d, more than the disk's used space (500)", sum)
+	}
+	if b.Entries[1].Bytes <= b.Entries[0].Bytes {
+		t.Fatalf("scaling lost the proportions: %+v", b.Entries)
+	}
+}
+
 func TestResultIsSentOnceAndResentWhenTheHeartbeatFails(t *testing.T) {
 	s := NewScanner("/", "/var/lib/nodexa")
 	if s.Pending() != nil {

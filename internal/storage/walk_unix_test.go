@@ -47,7 +47,7 @@ func TestWalkSizeCountsAllocatedBlocks(t *testing.T) {
 	write(t, filepath.Join(root, "a", "one"), 10_000)
 	write(t, filepath.Join(root, "a", "b", "two"), 3)
 
-	got, err := walkSize(context.Background(), root, devOf(t, root), nil)
+	got, err := walkSize(context.Background(), root, devOf(t, root), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestWalkSizeCountsAHardLinkedFileOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := walkSize(context.Background(), root, devOf(t, root), nil)
+	got, err := walkSize(context.Background(), root, devOf(t, root), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestWalkSizeDoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := walkSize(context.Background(), root, devOf(t, root), nil)
+	got, err := walkSize(context.Background(), root, devOf(t, root), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestWalkSizeSkipsExcludedDirectories(t *testing.T) {
 	write(t, filepath.Join(root, "keep", "f"), 20_000)
 	write(t, filepath.Join(root, "inner", "f"), 90_000)
 
-	got, err := walkSize(context.Background(), root, devOf(t, root), map[string]bool{filepath.Join(root, "inner"): true})
+	got, err := walkSize(context.Background(), root, devOf(t, root), map[string]bool{filepath.Join(root, "inner"): true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,33 @@ func TestWalkSizeStopsWhenCancelled(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := walkSize(ctx, root, devOf(t, root), nil); err == nil {
+	if _, err := walkSize(ctx, root, devOf(t, root), nil, nil); err == nil {
 		t.Fatal("a cancelled scan returned a result; a partial one would understate everything")
+	}
+}
+
+func TestWalkSizeCountsADirectoryReachedTwiceOnce(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f"), make([]byte, 64*1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dev := devOf(t, root)
+	seen := make(map[[2]uint64]struct{})
+
+	first, err := walkSize(context.Background(), dir, dev, nil, seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same directory again, as a bind mount elsewhere would present it.
+	again, err := walkSize(context.Background(), dir, dev, nil, seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == 0 || again != 0 {
+		t.Fatalf("first = %d, again = %d, want the tree counted once", first, again)
 	}
 }

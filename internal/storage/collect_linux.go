@@ -62,6 +62,7 @@ func collect(ctx context.Context, diskPath, dataDir string) (*Breakdown, error) 
 
 	var entries []Entry
 	measured := make(map[string]bool)
+	seenDirs := make(map[[2]uint64]struct{})
 	for _, t := range targets(ctx, dataDir) {
 		root, err := filepath.EvalSymlinks(t.path)
 		if err != nil {
@@ -74,7 +75,7 @@ func collect(ctx context.Context, diskPath, dataDir string) (*Breakdown, error) 
 		if err != nil || dev != diskDev {
 			continue
 		}
-		size, err := walkSize(ctx, root, dev, measured)
+		size, err := walkSize(ctx, root, dev, measured, seenDirs)
 		if err != nil {
 			return nil, err
 		}

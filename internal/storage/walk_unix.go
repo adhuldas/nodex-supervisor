@@ -28,7 +28,11 @@ const (
 // nothing from other filesystems (overlay mounts under running containers,
 // tmpfs, ...) and nothing under the directories in exclude, which were
 // measured separately.
-func walkSize(ctx context.Context, root string, dev uint64, exclude map[string]bool) (uint64, error) {
+//
+// seenDirs, when given, records every directory visited by (device, inode)
+// and is shared across calls: a directory reachable twice -- a bind mount of
+// one path inside another on the same filesystem -- is measured once.
+func walkSize(ctx context.Context, root string, dev uint64, exclude map[string]bool, seenDirs map[[2]uint64]struct{}) (uint64, error) {
 	var total uint64
 	seen := make(map[[2]uint64]struct{})
 	visited := 0
@@ -60,6 +64,15 @@ func walkSize(ctx context.Context, root string, dev uint64, exclude map[string]b
 				return fs.SkipDir
 			}
 			return nil
+		}
+		if d.IsDir() && seenDirs != nil {
+			key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
+			if _, dup := seenDirs[key]; dup {
+				return fs.SkipDir
+			}
+			if len(seenDirs) < maxHardlinks {
+				seenDirs[key] = struct{}{}
+			}
 		}
 		if !d.IsDir() && st.Nlink > 1 {
 			key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
